@@ -1690,6 +1690,27 @@ pub fn fail_adapter_job(
     }
 }
 
+pub fn get_leased_generation_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+) -> Result<GenerationJob, String> {
+    let conn = connection(db_path)?;
+    let sql = format!(
+        "{GENERATION_JOB_SELECT}
+         WHERE id = ?1
+           AND lease_token = ?2
+           AND status IN ('assigned', 'recovering', 'starting', 'generating')"
+    );
+    conn.query_row(&sql, params![job_id, lease_token], row_to_generation_job)
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            "Generation job is not owned by this adapter lease or is no longer executable."
+                .to_string()
+        })
+}
+
 pub fn create_generation_job(
     db_path: &Path,
     request: CreateGenerationJobRequest,

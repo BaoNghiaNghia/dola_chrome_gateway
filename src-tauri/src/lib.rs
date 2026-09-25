@@ -2,6 +2,7 @@ mod api_server;
 mod chrome;
 mod commands;
 mod db;
+mod execution_browser;
 mod models;
 mod proxy;
 mod state;

@@ -65,6 +65,8 @@ POST /v1/adapter/jobs/{job_id}/start
 POST /v1/adapter/jobs/{job_id}/progress
 POST /v1/adapter/jobs/{job_id}/complete
 POST /v1/adapter/jobs/{job_id}/fail
+POST /v1/adapter/jobs/{job_id}/browser/open
+POST /v1/adapter/jobs/{job_id}/browser/close
 ```
 
 Example:
@@ -78,7 +80,11 @@ curl -X POST http://127.0.0.1:8787/v1/videos/generations ^
 
 The allocation worker is disabled by default. When enabled, it requires Smart Scheduler to be ON and assigns queued jobs to Ready profiles using least-recently-used ordering. Its current mode is `allocation_only`: it reserves a profile and changes the job to `assigned`.
 
-The adapter protocol uses short-lived per-job leases so two adapter processes cannot execute the same job concurrently. A claim returns a lease token plus assigned profile context. The adapter renews that lease with heartbeat calls, then reports `start`, `progress`, `complete`, or `fail`. Retryable failures are returned to the queue with a backoff and their profile assignment is cleared so the scheduler can select another Ready profile. Automatic Seedance website interaction itself remains isolated in the adapter layer.
+The adapter protocol uses short-lived per-job leases so two adapter processes cannot execute the same job concurrently. A claim returns a lease token plus assigned profile context. The adapter renews that lease with heartbeat calls, then reports `start`, `progress`, `complete`, or `fail`. Retryable failures are returned to the queue with a backoff and their profile assignment is cleared so the scheduler can select another Ready profile.
+
+For browser execution, an adapter can open the job's assigned persistent Chrome profile through `/browser/open`. The gateway keeps the profile's existing `--user-data-dir` session, applies the system Proxy Pool before launch when enabled, and starts Chrome DevTools on `127.0.0.1` with an ephemeral port. The response contains `cdpHttpUrl` and `browserWebsocketUrl` for that local adapter session. A profile already running without the gateway's local DevTools mode is not silently reattached; it must be closed and reopened through the adapter endpoint. `/browser/close` closes only that assigned profile and releases its proxy slot.
+
+Automatic Seedance website interaction itself remains isolated in the adapter layer; the Tauri core does not store login credentials or extract browser cookies.
 
 ## Stack
 

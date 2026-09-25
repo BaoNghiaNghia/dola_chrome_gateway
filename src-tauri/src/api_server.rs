@@ -1,7 +1,9 @@
 use crate::db;
+use crate::execution_browser;
 use crate::models::{
-    AdapterClaimRequest, AdapterCompleteRequest, AdapterFailRequest, AdapterHeartbeatRequest,
-    AdapterProgressRequest, AdapterStartRequest, CreateGenerationJobRequest,
+    AdapterBrowserCloseRequest, AdapterBrowserOpenRequest, AdapterClaimRequest,
+    AdapterCompleteRequest, AdapterFailRequest, AdapterHeartbeatRequest, AdapterProgressRequest,
+    AdapterStartRequest, CreateGenerationJobRequest,
 };
 use crate::state::BackgroundRuntime;
 use serde_json::{json, Value};
@@ -223,6 +225,57 @@ fn handle_request(mut stream: TcpStream, db_path: &Path) {
     if let Some(adapter_path) = request.path.strip_prefix("/v1/adapter/jobs/") {
         if request.method != "POST" {
             write_error(&mut stream, "Method not allowed.", 405);
+            return;
+        }
+
+        if let Some(job_id) = adapter_path.strip_suffix("/browser/open") {
+            let result = serde_json::from_slice::<AdapterBrowserOpenRequest>(&request.body)
+                .map_err(|e| format!("Invalid browser open request: {e}"))
+                .and_then(|payload| {
+                    execution_browser::open(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        payload.start_url.as_deref(),
+                    )
+                });
+
+            match result {
+                Ok(session) => {
+                    let _ = write_json(&mut stream, json!(session), 200);
+                }
+                Err(error) => {
+                    let status = if error.contains("lease") || error.contains("owned") {
+                        409
+                    } else {
+                        400
+                    };
+                    write_error(&mut stream, error, status);
+                }
+            }
+            return;
+        }
+
+        if let Some(job_id) = adapter_path.strip_suffix("/browser/close") {
+            let result = serde_json::from_slice::<AdapterBrowserCloseRequest>(&request.body)
+                .map_err(|e| format!("Invalid browser close request: {e}"))
+                .and_then(|payload| {
+                    execution_browser::close(db_path, job_id, &payload.lease_token)
+                });
+
+            match result {
+                Ok(()) => {
+                    let _ = write_json(&mut stream, json!({"closed": true}), 200);
+                }
+                Err(error) => {
+                    let status = if error.contains("lease") || error.contains("owned") {
+                        409
+                    } else {
+                        400
+                    };
+                    write_error(&mut stream, error, status);
+                }
+            }
             return;
         }
 

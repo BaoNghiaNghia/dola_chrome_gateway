@@ -2,6 +2,7 @@ use crate::models::ProxySettings;
 use crate::proxy;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -76,6 +77,134 @@ pub fn launch(
         .map_err(|e| format!("Cannot start Chrome: {e}"))?;
 
     Ok(child.id())
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugBrowserInfo {
+    pub pid: u32,
+    pub devtools_port: u16,
+    pub browser_websocket_url: String,
+}
+
+fn devtools_active_port_path(profile_path: &Path) -> PathBuf {
+    profile_path.join("DevToolsActivePort")
+}
+
+fn parse_devtools_active_port(raw: &str) -> Result<(u16, String), String> {
+    let mut lines = raw.lines();
+    let port = lines
+        .next()
+        .ok_or_else(|| "DevToolsActivePort is missing its port.".to_string())?
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "DevToolsActivePort contains an invalid port.".to_string())?;
+    if port == 0 {
+        return Err("DevToolsActivePort contains port 0.".into());
+    }
+
+    let browser_path = lines
+        .next()
+        .ok_or_else(|| "DevToolsActivePort is missing its browser websocket path.".to_string())?
+        .trim();
+    if !browser_path.starts_with("/devtools/browser/") {
+        return Err("DevToolsActivePort contains an invalid browser websocket path.".into());
+    }
+
+    Ok((port, format!("ws://127.0.0.1:{port}{browser_path}")))
+}
+
+fn devtools_port_is_reachable(port: u16) -> bool {
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    TcpStream::connect_timeout(&address.into(), Duration::from_millis(300)).is_ok()
+}
+
+pub fn read_devtools_active_port(profile_path: &Path) -> Result<Option<(u16, String)>, String> {
+    let path = devtools_active_port_path(profile_path);
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    parse_devtools_active_port(&raw).map(Some)
+}
+
+pub fn launch_debuggable(
+    profile_path: &Path,
+    start_url: Option<&str>,
+    proxy_settings: &ProxySettings,
+) -> Result<DebugBrowserInfo, String> {
+    if let Some(pid) = find_profile_pid(profile_path)? {
+        if let Some((port, browser_websocket_url)) = read_devtools_active_port(profile_path)? {
+            if devtools_port_is_reachable(port) {
+                return Ok(DebugBrowserInfo {
+                    pid,
+                    devtools_port: port,
+                    browser_websocket_url,
+                });
+            }
+        }
+        return Err(format!(
+            "This Chrome profile is already running (PID {pid}) without adapter DevTools enabled. Close it and let the adapter reopen it."
+        ));
+    }
+
+    let chrome = find_chrome_executable().ok_or_else(|| {
+        "Google Chrome was not found. Install Chrome or add chrome.exe to PATH.".to_string()
+    })?;
+    std::fs::create_dir_all(profile_path)
+        .map_err(|e| format!("Cannot create profile directory: {e}"))?;
+
+    let active_port_path = devtools_active_port_path(profile_path);
+    if active_port_path.exists() {
+        std::fs::remove_file(&active_port_path).map_err(|e| {
+            format!(
+                "Cannot remove stale {} before adapter launch: {e}",
+                active_port_path.display()
+            )
+        })?;
+    }
+
+    let mut command = Command::new(chrome);
+    command
+        .arg(format!(
+            "--user-data-dir={}",
+            profile_path.to_string_lossy()
+        ))
+        .arg("--no-first-run")
+        .arg("--new-window")
+        .arg("--remote-debugging-address=127.0.0.1")
+        .arg("--remote-debugging-port=0");
+
+    if let Some(proxy_server) = proxy::proxy_server_arg(proxy_settings)? {
+        command.arg(format!("--proxy-server={proxy_server}"));
+    }
+
+    let child = command
+        .arg(start_url.unwrap_or("about:blank"))
+        .spawn()
+        .map_err(|e| format!("Cannot start Chrome execution browser: {e}"))?;
+    let spawned_pid = child.id();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        if let Some((port, browser_websocket_url)) = read_devtools_active_port(profile_path)? {
+            let pid = find_profile_pid(profile_path)?.unwrap_or(spawned_pid);
+            return Ok(DebugBrowserInfo {
+                pid,
+                devtools_port: port,
+                browser_websocket_url,
+            });
+        }
+
+        if !is_pid_running(spawned_pid) && find_profile_pid(profile_path)?.is_none() {
+            return Err("Chrome exited before its local DevTools endpoint became ready.".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let _ = close_profile(profile_path, Some(spawned_pid));
+    Err("Chrome started but its local DevTools endpoint was not ready within 8 seconds.".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -251,4 +380,27 @@ pub fn close_profile(profile_path: &Path, known_pid: Option<u32>) -> Result<(), 
     }
 
     force_close_process_tree(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_devtools_active_port_file() {
+        let (port, websocket_url) =
+            parse_devtools_active_port("9222\n/devtools/browser/test-browser-id\n").unwrap();
+        assert_eq!(port, 9222);
+        assert_eq!(
+            websocket_url,
+            "ws://127.0.0.1:9222/devtools/browser/test-browser-id"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_devtools_active_port_file() {
+        assert!(parse_devtools_active_port("0\n/devtools/browser/id\n").is_err());
+        assert!(parse_devtools_active_port("9222\n/not-devtools/id\n").is_err());
+        assert!(parse_devtools_active_port("not-a-port\n/devtools/browser/id\n").is_err());
+    }
 }

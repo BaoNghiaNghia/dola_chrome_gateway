@@ -314,6 +314,30 @@ pub struct AdapterFailRequest {
     pub retry_after_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterBrowserOpenRequest {
+    pub lease_token: String,
+    pub start_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterBrowserCloseRequest {
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionBrowserSession {
+    pub profile_id: String,
+    pub pid: u32,
+    pub devtools_port: u16,
+    pub cdp_http_url: String,
+    pub browser_websocket_url: String,
+    pub active_proxy: Option<ActiveProxyAssignment>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalApiState {
