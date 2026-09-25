@@ -106,6 +106,57 @@ pub struct ActiveProxyAssignment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProfileOperationalState {
+    pub scheduling_enabled: bool,
+    pub session_status: String,
+    pub login_checked_at: Option<String>,
+    pub cooldown_until: Option<String>,
+    pub rate_limited_until: Option<String>,
+    pub quota_blocked_until: Option<String>,
+    pub credit_balance: Option<f64>,
+    pub used_today: u32,
+    pub remaining: Option<u32>,
+    pub last_used_at: Option<String>,
+    pub availability: String,
+    pub availability_reason: Option<String>,
+}
+
+impl Default for ProfileOperationalState {
+    fn default() -> Self {
+        Self {
+            scheduling_enabled: true,
+            session_status: "unknown".into(),
+            login_checked_at: None,
+            cooldown_until: None,
+            rate_limited_until: None,
+            quota_blocked_until: None,
+            credit_balance: None,
+            used_today: 0,
+            remaining: None,
+            last_used_at: None,
+            availability: "unknown".into(),
+            availability_reason: Some("Session has not been verified yet.".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileOperationalStateRequest {
+    pub scheduling_enabled: Option<bool>,
+    pub session_status: Option<String>,
+    pub login_checked_at: Option<String>,
+    pub cooldown_until: Option<String>,
+    pub rate_limited_until: Option<String>,
+    pub quota_blocked_until: Option<String>,
+    pub credit_balance: Option<f64>,
+    pub used_today: Option<u32>,
+    pub remaining: Option<u32>,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserProfile {
     pub id: String,
     pub name: String,
@@ -117,6 +168,7 @@ pub struct BrowserProfile {
     pub profile_path: String,
     pub proxy: ProxySettings,
     pub active_proxy: Option<ActiveProxyAssignment>,
+    pub operational: ProfileOperationalState,
     pub is_running: bool,
     pub pid: Option<u32>,
     pub last_opened_at: Option<String>,
@@ -136,6 +188,60 @@ pub struct CreateProfileRequest {
     pub tags: Vec<String>,
     pub notes: Option<String>,
     pub proxy: Option<ProxySettingsRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulerState {
+    pub enabled: bool,
+    pub ready_profiles: usize,
+    pub blocked_profiles: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationJob {
+    pub id: String,
+    pub prompt: String,
+    pub model: String,
+    pub duration_seconds: u32,
+    pub ratio: String,
+    pub status: String,
+    pub profile_id: Option<String>,
+    pub proxy_id: Option<String>,
+    pub external_task_id: Option<String>,
+    pub result_url: Option<String>,
+    pub failure_code: Option<String>,
+    pub error_message: Option<String>,
+    pub deadline_at: Option<String>,
+    pub last_poll_at: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGenerationJobRequest {
+    pub prompt: String,
+    pub model: Option<String>,
+    pub duration_seconds: Option<u32>,
+    pub ratio: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGenerationJobRequest {
+    pub status: Option<String>,
+    pub profile_id: Option<String>,
+    pub proxy_id: Option<String>,
+    pub external_task_id: Option<String>,
+    pub result_url: Option<String>,
+    pub failure_code: Option<String>,
+    pub error_message: Option<String>,
+    pub deadline_at: Option<String>,
+    pub last_poll_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

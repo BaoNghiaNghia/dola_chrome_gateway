@@ -1478,3 +1478,494 @@ button:disabled {
 .nav-item.active .nav-icon {
   filter: saturate(1.08);
 }
+
+
+/* Smart Scheduler + operational health */
+.scheduler-card {
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  border: 1px solid #dedcf3;
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 85% 20%, rgba(99, 88, 232, 0.09), transparent 22rem),
+    rgba(255, 255, 255, 0.94);
+  box-shadow: 0 7px 28px rgba(38, 48, 74, 0.035);
+}
+
+.scheduler-copy {
+  min-width: 0;
+}
+
+.scheduler-copy h3 {
+  margin: 4px 0 5px;
+  color: #292f40;
+  font-size: 15px;
+}
+
+.scheduler-copy p {
+  max-width: 690px;
+  margin: 0;
+  color: #838b9b;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.scheduler-summary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scheduler-summary > div {
+  min-width: 54px;
+  padding: 8px 10px;
+  border: 1px solid #e5e3f2;
+  border-radius: 9px;
+  background: #fbfaff;
+  text-align: center;
+}
+
+.scheduler-summary span,
+.scheduler-summary strong {
+  display: block;
+}
+
+.scheduler-summary span {
+  color: #9299a8;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.scheduler-summary strong {
+  margin-top: 3px;
+  color: #373e50;
+  font-size: 16px;
+}
+
+.scheduler-open {
+  white-space: nowrap;
+}
+
+.scheduler-toggle {
+  width: 48px;
+  height: 27px;
+}
+
+.scheduler-toggle span::after {
+  width: 19px;
+  height: 19px;
+}
+
+.scheduler-toggle input:checked + span::after {
+  transform: translateX(21px);
+}
+
+.table-head,
+.profile-row {
+  grid-template-columns:
+    30px
+    minmax(170px, 1.45fr)
+    minmax(105px, .9fr)
+    minmax(100px, .82fr)
+    minmax(115px, .95fr)
+    minmax(78px, .62fr)
+    82px
+    88px
+    104px;
+  gap: 9px;
+}
+
+.availability-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.availability-badge {
+  min-width: 0;
+  max-width: 88px;
+  padding: 4px 7px;
+  overflow: hidden;
+  border: 1px solid #e1e4ea;
+  border-radius: 999px;
+  color: #7e8695;
+  background: #f8f9fb;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.availability-ready {
+  color: #277858;
+  border-color: #c8e6d8;
+  background: #effaf5;
+}
+
+.availability-needs_login,
+.availability-rate_limited,
+.availability-quota_blocked {
+  color: #a54455;
+  border-color: #efcad2;
+  background: #fff4f6;
+}
+
+.availability-cooldown {
+  color: #89682f;
+  border-color: #eddfbc;
+  background: #fff9ec;
+}
+
+.availability-unknown {
+  color: #746b9b;
+  border-color: #ddd7f4;
+  background: #f7f5ff;
+}
+
+.availability-disabled {
+  color: #858d9b;
+  border-color: #e2e5ea;
+  background: #f6f7f9;
+}
+
+.health-inline-action {
+  height: 23px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+  border: 1px solid #dcdfea;
+  border-radius: 6px;
+  color: #6259ce;
+  background: white;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.health-inline-action:hover {
+  border-color: #c4bff0;
+  background: #faf9ff;
+}
+
+.health-warning-action {
+  color: #9a5d32;
+}
+
+/* Generation Queue */
+.queue-nav-icon img {
+  border-radius: 6px;
+}
+
+.queue-foundation-card {
+  margin-bottom: 18px;
+  padding: 17px 19px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border: 1px solid #dedcf3;
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 88% 18%, rgba(119, 80, 255, 0.11), transparent 23rem),
+    rgba(255,255,255,.94);
+}
+
+.queue-foundation-card h3 {
+  margin: 4px 0 5px;
+  color: #292f40;
+  font-size: 16px;
+}
+
+.queue-foundation-card p {
+  max-width: 760px;
+  margin: 0;
+  color: #858d9d;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.queue-ready-chip {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid #c7e5d6;
+  border-radius: 999px;
+  color: #267858;
+  background: #effaf5;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+
+.queue-stats {
+  margin-bottom: 18px;
+}
+
+.queue-create-card {
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid #dedfe8;
+  border-radius: 13px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 7px 28px rgba(38,48,74,.035);
+}
+
+.queue-create-heading {
+  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.queue-create-heading strong,
+.queue-create-heading span {
+  display: block;
+}
+
+.queue-create-heading strong {
+  color: #343b4d;
+  font-size: 12px;
+}
+
+.queue-create-heading span {
+  margin-top: 4px;
+  color: #929aa9;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.queue-create-card label {
+  display: block;
+  color: #565e6f;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.queue-create-card textarea,
+.queue-create-card select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 10px;
+  border: 1px solid #dce0e8;
+  border-radius: 8px;
+  outline: 0;
+  color: #313849;
+  background: #fff;
+  font-size: 11px;
+}
+
+.queue-create-card textarea {
+  resize: vertical;
+}
+
+.queue-form-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1.25fr .7fr .7fr;
+  gap: 10px;
+}
+
+.queue-create-actions {
+  margin-top: 15px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.queue-panel-head {
+  min-height: 58px;
+  padding: 13px 16px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.queue-panel-head strong,
+.queue-panel-head span {
+  display: block;
+}
+
+.queue-panel-head strong {
+  color: #343b4d;
+  font-size: 11px;
+}
+
+.queue-panel-head span {
+  margin-top: 3px;
+  color: #9aa1b0;
+  font-size: 9px;
+}
+
+.queue-empty .empty-icon {
+  padding: 7px;
+  background: #19175c;
+}
+
+.queue-empty .empty-icon img {
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
+}
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.job-row {
+  min-height: 76px;
+  padding: 11px 16px;
+  display: grid;
+  grid-template-columns: minmax(280px, 1.7fr) 130px 95px 120px;
+  gap: 14px;
+  align-items: center;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.job-row:last-child {
+  border-bottom: 0;
+}
+
+.job-row:hover {
+  background: #fbfbff;
+}
+
+.job-main {
+  min-width: 0;
+}
+
+.job-main strong,
+.job-main small {
+  display: block;
+}
+
+.job-main strong {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #343b4d;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-main small {
+  margin-top: 4px;
+  color: #979fad;
+  font-size: 9px;
+}
+
+.job-status {
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid #dddfe7;
+  border-radius: 999px;
+  color: #7d8594;
+  background: #f8f9fb;
+  font-size: 8px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.job-status-queued {
+  color: #6559c7;
+  border-color: #d9d3f3;
+  background: #f6f3ff;
+}
+
+.job-status-starting,
+.job-status-generating {
+  color: #2b6f91;
+  border-color: #c9dfeb;
+  background: #f1f9fd;
+}
+
+.job-status-recovering {
+  color: #89682f;
+  border-color: #eddfbc;
+  background: #fff9ec;
+}
+
+.job-status-completed {
+  color: #277858;
+  border-color: #c8e6d8;
+  background: #effaf5;
+}
+
+.job-status-failed,
+.job-status-cancelled {
+  color: #a54455;
+  border-color: #efcad2;
+  background: #fff4f6;
+}
+
+.job-assignment span,
+.job-assignment strong {
+  display: block;
+}
+
+.job-assignment span {
+  color: #9aa1b0;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.job-assignment strong {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #555e70;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 7px;
+}
+
+.job-result-ready {
+  color: #277858;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+@media (max-width: 1180px) {
+  .table-head,
+  .profile-row {
+    grid-template-columns:
+      28px
+      minmax(150px, 1.35fr)
+      minmax(90px, .8fr)
+      94px
+      105px
+      70px
+      76px
+      80px
+      92px;
+    gap: 7px;
+  }
+
+  .scheduler-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scheduler-summary {
+    width: 100%;
+  }
+
+  .job-row {
+    grid-template-columns: minmax(220px, 1.5fr) 105px 84px 105px;
+    gap: 9px;
+  }
+}

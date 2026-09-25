@@ -23,6 +23,7 @@ pub fn run() {
 
             let db_path = app_data_dir.join("profiles.sqlite3");
             db::init(&db_path).map_err(std::io::Error::other)?;
+            db::mark_interrupted_jobs_recovering(&db_path).map_err(std::io::Error::other)?;
             app.manage(AppState::new(db_path, profiles_dir));
             Ok(())
         })
@@ -33,6 +34,15 @@ pub fn run() {
             commands::update_profile_proxy,
             commands::test_profile_proxy,
             commands::rotate_profile_proxy,
+            commands::get_scheduler_state,
+            commands::set_scheduler_enabled,
+            commands::update_profile_operational_state,
+            commands::clear_profile_operational_blocks,
+            commands::open_smart_profiles,
+            commands::list_generation_jobs,
+            commands::create_generation_job,
+            commands::update_generation_job,
+            commands::cancel_generation_job,
             commands::get_proxy_pool_state,
             commands::set_proxy_pool_enabled,
             commands::create_proxy_pool_item,

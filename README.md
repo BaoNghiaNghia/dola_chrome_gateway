@@ -34,14 +34,16 @@ npm start
 - Track locally launched Chrome processes and close them from the app.
 - Save reusable workspaces containing 1-4 profiles.
 - Detect common Google Chrome installation locations on Windows.
-- Optional per-profile proxy toggle. When OFF, Chrome is launched without `--proxy-server`.
-- HTTP, HTTPS, and SOCKS5 proxy endpoints.
-- Sticky, rotate-on-launch, and manual rotation modes.
-- Fail-closed proxy preflight: an enabled proxy must be reachable before Chrome launches.
-- Proxy health, latency, and last public IP shown in the UI when available.
-- Proxy changes and manual rotation are blocked while the profile is running.
+- Optional system-wide rotating Proxy Pool. When OFF, new Chrome launches use the direct machine connection.
+- HTTP, HTTPS, and SOCKS5 proxy slots with one reserved proxy per running profile.
+- Rotate-before-allocation, proxy preflight, health, latency, last public IP, and fail-closed batch launch.
 - Running Chrome profiles are rediscovered from their `--user-data-dir` after manager restarts, preventing duplicate launches.
 - Profile close requests graceful Chrome shutdown first, then uses force-close only as a fallback.
+- Smart Scheduler with per-profile session health, scheduler enable/disable, cooldown, rate-limit, quota-block, credits, usage, and least-recently-used selection.
+- Scheduler-ready profiles can be launched automatically with `Open Smart`; blocked profiles are skipped.
+- Persistent Seedance generation queue stored in SQLite with queued/starting/generating/recovering/completed/failed/cancelled states.
+- Interrupted generation jobs in `starting` or `generating` automatically return as `recovering` after an app restart.
+- Queue UI supports Seedance model, duration, aspect ratio, persistent job creation, status inspection, and cancellation. The website execution adapter is intentionally a separate next phase.
 
 ## Stack
 

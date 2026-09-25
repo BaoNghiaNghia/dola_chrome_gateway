@@ -66,6 +66,46 @@ export type ActiveProxyAssignment = {
   assignedAt: string;
 };
 
+export type ProfileAvailability =
+  | "ready"
+  | "unknown"
+  | "disabled"
+  | "needs_login"
+  | "cooldown"
+  | "rate_limited"
+  | "quota_blocked";
+
+export type ProfileOperationalState = {
+  schedulingEnabled: boolean;
+  sessionStatus: "unknown" | "healthy" | "needs_login";
+  loginCheckedAt: string | null;
+  cooldownUntil: string | null;
+  rateLimitedUntil: string | null;
+  quotaBlockedUntil: string | null;
+  creditBalance: number | null;
+  usedToday: number;
+  remaining: number | null;
+  lastUsedAt: string | null;
+  availability: ProfileAvailability;
+  availabilityReason: string | null;
+};
+
+export type UpdateProfileOperationalStateInput = Partial<
+  Pick<
+    ProfileOperationalState,
+    | "schedulingEnabled"
+    | "sessionStatus"
+    | "loginCheckedAt"
+    | "cooldownUntil"
+    | "rateLimitedUntil"
+    | "quotaBlockedUntil"
+    | "creditBalance"
+    | "usedToday"
+    | "remaining"
+    | "lastUsedAt"
+  >
+>;
+
 export type BrowserProfile = {
   id: string;
   name: string;
@@ -77,12 +117,71 @@ export type BrowserProfile = {
   profilePath: string;
   proxy: ProxySettings;
   activeProxy: ActiveProxyAssignment | null;
+  operational: ProfileOperationalState;
   isRunning: boolean;
   pid: number | null;
   lastOpenedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
+
+export type SchedulerState = {
+  enabled: boolean;
+  readyProfiles: number;
+  blockedProfiles: number;
+};
+
+export type GenerationJobStatus =
+  | "queued"
+  | "starting"
+  | "generating"
+  | "recovering"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type GenerationJob = {
+  id: string;
+  prompt: string;
+  model: string;
+  durationSeconds: number;
+  ratio: string;
+  status: GenerationJobStatus;
+  profileId: string | null;
+  proxyId: string | null;
+  externalTaskId: string | null;
+  resultUrl: string | null;
+  failureCode: string | null;
+  errorMessage: string | null;
+  deadlineAt: string | null;
+  lastPollAt: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+};
+
+export type CreateGenerationJobInput = {
+  prompt: string;
+  model?: string | null;
+  durationSeconds?: number | null;
+  ratio?: string | null;
+};
+
+export type UpdateGenerationJobInput = Partial<
+  Pick<
+    GenerationJob,
+    | "status"
+    | "profileId"
+    | "proxyId"
+    | "externalTaskId"
+    | "resultUrl"
+    | "failureCode"
+    | "errorMessage"
+    | "deadlineAt"
+    | "lastPollAt"
+  >
+>;
 
 export type Workspace = {
   id: string;

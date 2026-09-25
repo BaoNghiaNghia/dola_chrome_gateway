@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
+  cancelGenerationJob,
+  clearProfileOperationalBlocks,
   closeProfile,
+  createGenerationJob,
   createProfile,
   createProxyPoolItem,
   createWorkspace,
@@ -9,21 +12,29 @@ import {
   deleteProxyPoolItem,
   deleteWorkspace,
   getProxyPoolState,
+  getSchedulerState,
   getSystemInfo,
+  listGenerationJobs,
   listProfiles,
   listWorkspaces,
   openProfiles,
+  openSmartProfiles,
   rotateProxyPoolItem,
   setProxyPoolEnabled,
+  setSchedulerEnabled,
   testProxyPoolItem,
+  updateProfileOperationalState,
   updateProxyPoolItem,
 } from "./api";
 import type {
   BrowserProfile,
+  CreateGenerationJobInput,
   CreateProfileInput,
+  GenerationJob,
   ProxyPoolItem,
   ProxyPoolItemInput,
   ProxyPoolState,
+  SchedulerState,
   SystemInfo,
   Workspace,
 } from "./types";
@@ -35,7 +46,7 @@ import "./App.css";
 const SERVICES = ["Gmail", "Facebook", "Apple ID"];
 const MAX_SELECTED = 4;
 
-type View = "profiles" | "proxies";
+type View = "profiles" | "proxies" | "queue";
 
 const DEFAULT_PROXY_ITEM: ProxyPoolItemInput = {
   name: "",
@@ -435,6 +446,19 @@ function App() {
     enabled: false,
     items: [],
   });
+  const [scheduler, setScheduler] = useState<SchedulerState>({
+    enabled: false,
+    readyProfiles: 0,
+    blockedProfiles: 0,
+  });
+  const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
+  const [showJobForm, setShowJobForm] = useState(false);
+  const [jobForm, setJobForm] = useState<CreateGenerationJobInput>({
+    prompt: "",
+    model: "seedance-2.5",
+    durationSeconds: 10,
+    ratio: "1:1",
+  });
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("All");
@@ -450,17 +474,27 @@ function App() {
 
   async function refresh() {
     try {
-      const [nextProfiles, nextWorkspaces, nextSystem, nextProxyPool] =
-        await Promise.all([
-          listProfiles(),
-          listWorkspaces(),
-          getSystemInfo(),
-          getProxyPoolState(),
-        ]);
+      const [
+        nextProfiles,
+        nextWorkspaces,
+        nextSystem,
+        nextProxyPool,
+        nextScheduler,
+        nextJobs,
+      ] = await Promise.all([
+        listProfiles(),
+        listWorkspaces(),
+        getSystemInfo(),
+        getProxyPoolState(),
+        getSchedulerState(),
+        listGenerationJobs(),
+      ]);
       setProfiles(nextProfiles);
       setWorkspaces(nextWorkspaces);
       setSystem(nextSystem);
       setProxyPool(nextProxyPool);
+      setScheduler(nextScheduler);
+      setGenerationJobs(nextJobs);
       setSelected((current) =>
         current.filter((id) =>
           nextProfiles.some((profile) => profile.id === id),
@@ -523,6 +557,12 @@ function App() {
       .filter((profile) => profile.isRunning && profile.activeProxy)
       .map((profile) => profile.activeProxy!.proxyId),
   );
+  const queuedJobs = generationJobs.filter((job) => job.status === "queued").length;
+  const activeJobs = generationJobs.filter((job) =>
+    ["starting", "generating", "recovering"].includes(job.status),
+  ).length;
+  const completedJobs = generationJobs.filter((job) => job.status === "completed").length;
+  const failedJobs = generationJobs.filter((job) => job.status === "failed").length;
 
   function toggleSelected(id: string) {
     setBanner(null);
@@ -582,6 +622,108 @@ function App() {
     }
   }
 
+  async function toggleScheduler(enabled: boolean) {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const next = await setSchedulerEnabled(enabled);
+      setScheduler(next);
+      setBanner({
+        kind: "success",
+        text: enabled
+          ? "Smart Scheduler enabled. Open Smart will use only Ready profiles."
+          : "Smart Scheduler disabled.",
+      });
+      await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markSessionHealthy(profile: BrowserProfile) {
+    await perform(
+      () =>
+        updateProfileOperationalState(profile.id, {
+          sessionStatus: "healthy",
+          loginCheckedAt: new Date().toISOString(),
+        }),
+      `${profile.name} marked session healthy.`,
+    );
+  }
+
+  async function markNeedsLogin(profile: BrowserProfile) {
+    await perform(
+      () =>
+        updateProfileOperationalState(profile.id, {
+          sessionStatus: "needs_login",
+          loginCheckedAt: new Date().toISOString(),
+        }),
+      `${profile.name} marked as needing login.`,
+    );
+  }
+
+  async function clearProfileBlocks(profile: BrowserProfile) {
+    await perform(
+      () => clearProfileOperationalBlocks(profile.id),
+      `${profile.name} cooldown/rate-limit/quota blocks cleared.`,
+    );
+  }
+
+  async function submitGenerationJob(event: FormEvent) {
+    event.preventDefault();
+    if (!jobForm.prompt.trim()) return;
+
+    setBusy(true);
+    setBanner(null);
+    try {
+      await createGenerationJob({
+        ...jobForm,
+        prompt: jobForm.prompt.trim(),
+      });
+      setJobForm({
+        prompt: "",
+        model: "seedance-2.5",
+        durationSeconds: 10,
+        ratio: "1:1",
+      });
+      setShowJobForm(false);
+      setBanner({
+        kind: "success",
+        text: "Generation job queued persistently.",
+      });
+      await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function availabilityLabel(profile: BrowserProfile) {
+    switch (profile.operational.availability) {
+      case "ready":
+        return "Ready";
+      case "needs_login":
+        return "Need login";
+      case "cooldown":
+        return "Cooldown";
+      case "rate_limited":
+        return "Rate limited";
+      case "quota_blocked":
+        return "Quota blocked";
+      case "disabled":
+        return "Disabled";
+      default:
+        return "Unknown";
+    }
+  }
+
+  function availabilityClass(profile: BrowserProfile) {
+    return `availability-${profile.operational.availability}`;
+  }
+
   function profileProxyLabel(profile: BrowserProfile) {
     if (profile.activeProxy) {
       return profile.activeProxy.publicIp || profile.activeProxy.proxyName;
@@ -628,6 +770,17 @@ function App() {
             </span>
             Proxies
             <b>{enabledProxyCount}</b>
+          </button>
+
+          <button
+            className={view === "queue" ? "nav-item active" : "nav-item"}
+            onClick={() => setView("queue")}
+          >
+            <span className="nav-icon queue-nav-icon">
+              <img src={seedanceLogo} alt="" aria-hidden="true" />
+            </span>
+            Queue
+            <b>{queuedJobs + activeJobs}</b>
           </button>
 
           <div className="nav-caption">WORKSPACES</div>
@@ -733,6 +886,49 @@ function App() {
               </div>
             </section>
 
+            <section className="scheduler-card">
+              <div className="scheduler-copy">
+                <span className="eyebrow">SMART PROFILE POOL</span>
+                <h3>{scheduler.enabled ? "Smart Scheduler enabled" : "Smart Scheduler disabled"}</h3>
+                <p>
+                  Ready profiles are selected by least-recently-used order. Profiles in
+                  cooldown, rate limit, quota block, disabled scheduling, or need-login
+                  state are skipped automatically.
+                </p>
+              </div>
+              <div className="scheduler-summary">
+                <div>
+                  <span>Ready</span>
+                  <strong>{scheduler.readyProfiles}</strong>
+                </div>
+                <div>
+                  <span>Blocked</span>
+                  <strong>{scheduler.blockedProfiles}</strong>
+                </div>
+                <button
+                  className="button secondary scheduler-open"
+                  disabled={!scheduler.enabled || scheduler.readyProfiles === 0 || busy}
+                  onClick={() =>
+                    perform(
+                      () => openSmartProfiles(MAX_SELECTED),
+                      "Smart Scheduler opened available Ready profiles.",
+                    )
+                  }
+                >
+                  ▶ Open Smart
+                </button>
+                <label className="master-toggle scheduler-toggle" title="Enable Smart Scheduler">
+                  <input
+                    type="checkbox"
+                    checked={scheduler.enabled}
+                    disabled={busy}
+                    onChange={(event) => void toggleScheduler(event.target.checked)}
+                  />
+                  <span />
+                </label>
+              </div>
+            </section>
+
             <section className="panel">
               <div className="toolbar">
                 <div className="search-box">
@@ -794,6 +990,7 @@ function App() {
                 <span>Profile</span>
                 <span>Services</span>
                 <span>Proxy</span>
+                <span>Health</span>
                 <span>Group</span>
                 <span>Status</span>
                 <span>Last opened</span>
@@ -875,6 +1072,69 @@ function App() {
                           {profileProxyLabel(profile)}
                         </div>
 
+                        <div
+                          className="availability-cell"
+                          title={profile.operational.availabilityReason || undefined}
+                        >
+                          <span
+                            className={`availability-badge ${availabilityClass(profile)}`}
+                          >
+                            {availabilityLabel(profile)}
+                          </span>
+                          {!profile.isRunning &&
+                            ["unknown", "needs_login"].includes(
+                              profile.operational.availability,
+                            ) && (
+                              <button
+                                className="health-inline-action"
+                                disabled={busy}
+                                onClick={() => void markSessionHealthy(profile)}
+                              >
+                                Mark OK
+                              </button>
+                            )}
+                          {!profile.isRunning &&
+                            ["cooldown", "rate_limited", "quota_blocked"].includes(
+                              profile.operational.availability,
+                            ) && (
+                              <button
+                                className="health-inline-action"
+                                disabled={busy}
+                                onClick={() => void clearProfileBlocks(profile)}
+                              >
+                                Clear
+                              </button>
+                            )}
+                          {!profile.isRunning &&
+                            profile.operational.availability === "disabled" && (
+                              <button
+                                className="health-inline-action"
+                                disabled={busy}
+                                onClick={() =>
+                                  perform(
+                                    () =>
+                                      updateProfileOperationalState(profile.id, {
+                                        schedulingEnabled: true,
+                                      }),
+                                    `${profile.name} scheduling enabled.`,
+                                  )
+                                }
+                              >
+                                Enable
+                              </button>
+                            )}
+                          {!profile.isRunning &&
+                            profile.operational.availability === "ready" && (
+                              <button
+                                className="health-inline-action health-warning-action"
+                                disabled={busy}
+                                onClick={() => void markNeedsLogin(profile)}
+                              >
+                                Need login
+                              </button>
+                            )}
+                        </div>
+
                         <span>{profile.groupName || "—"}</span>
 
                         <span
@@ -947,7 +1207,7 @@ function App() {
               {system?.dataDir ?? "Loading data path…"}
             </footer>
           </>
-        ) : (
+        ) : view === "proxies" ? (
           <>
             <header className="topbar">
               <div>
@@ -1155,6 +1415,235 @@ function App() {
                   })
                 )}
               </div>
+            </section>
+          </>
+        ) : (
+          <>
+            <header className="topbar">
+              <div>
+                <span className="eyebrow">SEEDANCE OPERATIONS</span>
+                <h1>Generation Queue</h1>
+                <p>
+                  Persistent jobs survive app restarts and are ready for the Seedance
+                  execution adapter.
+                </p>
+              </div>
+              <button
+                className="button primary"
+                onClick={() => setShowJobForm((current) => !current)}
+              >
+                <span className="plus">＋</span> New job
+              </button>
+            </header>
+
+            {banner && (
+              <div className={`banner ${banner.kind}`}>{banner.text}</div>
+            )}
+
+            <section className="queue-foundation-card">
+              <div>
+                <span className="eyebrow">PERSISTENT ORCHESTRATION</span>
+                <h3>Queue foundation active</h3>
+                <p>
+                  Jobs are stored in SQLite. If the app restarts while a future worker
+                  is starting or generating, those jobs return as Recovering instead of
+                  disappearing. Automatic Seedance submission/polling is not connected
+                  yet.
+                </p>
+              </div>
+              <div className="queue-ready-chip">RECOVERY READY</div>
+            </section>
+
+            <section className="stats-grid queue-stats">
+              <div className="stat-card">
+                <span>Queued</span>
+                <strong>{queuedJobs}</strong>
+                <small>Waiting for execution</small>
+              </div>
+              <div className="stat-card">
+                <span>Active / Recovering</span>
+                <strong>{activeJobs}</strong>
+                <small>Worker-owned jobs</small>
+              </div>
+              <div className="stat-card">
+                <span>Completed</span>
+                <strong>{completedJobs}</strong>
+                <small>Finished generations</small>
+              </div>
+              <div className="stat-card">
+                <span>Failed</span>
+                <strong>{failedJobs}</strong>
+                <small>Needs review or retry</small>
+              </div>
+            </section>
+
+            {showJobForm && (
+              <form className="queue-create-card" onSubmit={submitGenerationJob}>
+                <div className="queue-create-heading">
+                  <div>
+                    <strong>Queue Seedance job</strong>
+                    <span>
+                      This creates a persistent job record. The generation worker will
+                      be connected in the next integration phase.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => setShowJobForm(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <label>
+                  Prompt
+                  <textarea
+                    rows={4}
+                    value={jobForm.prompt}
+                    onChange={(event) =>
+                      setJobForm({ ...jobForm, prompt: event.target.value })
+                    }
+                    placeholder="Describe the Seedance video to generate..."
+                  />
+                </label>
+
+                <div className="queue-form-grid">
+                  <label>
+                    Model
+                    <select
+                      value={jobForm.model ?? "seedance-2.5"}
+                      onChange={(event) =>
+                        setJobForm({ ...jobForm, model: event.target.value })
+                      }
+                    >
+                      <option value="seedance-2.5">Seedance 2.5</option>
+                    </select>
+                  </label>
+                  <label>
+                    Duration
+                    <select
+                      value={jobForm.durationSeconds ?? 10}
+                      onChange={(event) =>
+                        setJobForm({
+                          ...jobForm,
+                          durationSeconds: Number(event.target.value),
+                        })
+                      }
+                    >
+                      <option value={5}>5s</option>
+                      <option value={10}>10s</option>
+                      <option value={15}>15s</option>
+                    </select>
+                  </label>
+                  <label>
+                    Ratio
+                    <select
+                      value={jobForm.ratio ?? "1:1"}
+                      onChange={(event) =>
+                        setJobForm({ ...jobForm, ratio: event.target.value })
+                      }
+                    >
+                      <option value="1:1">1:1</option>
+                      <option value="16:9">16:9</option>
+                      <option value="9:16">9:16</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="queue-create-actions">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => setShowJobForm(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="button primary"
+                    disabled={busy || !jobForm.prompt.trim()}
+                  >
+                    Queue generation
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <section className="panel queue-panel">
+              <div className="queue-panel-head">
+                <div>
+                  <strong>Generation jobs</strong>
+                  <span>{generationJobs.length} total persistent job(s)</span>
+                </div>
+              </div>
+
+              {generationJobs.length === 0 ? (
+                <div className="empty-state queue-empty">
+                  <div className="empty-icon">
+                    <img src={seedanceLogo} alt="" aria-hidden="true" />
+                  </div>
+                  <h3>No generation jobs yet</h3>
+                  <p>
+                    Create a job now to validate the persistent queue workflow before
+                    the Seedance execution adapter is connected.
+                  </p>
+                  <button
+                    className="button primary"
+                    onClick={() => setShowJobForm(true)}
+                  >
+                    Create first job
+                  </button>
+                </div>
+              ) : (
+                <div className="job-list">
+                  {generationJobs.map((job) => {
+                    const assignedProfile = job.profileId
+                      ? profiles.find((profile) => profile.id === job.profileId)
+                      : null;
+                    const terminal = ["completed", "failed", "cancelled"].includes(
+                      job.status,
+                    );
+                    return (
+                      <article className="job-row" key={job.id}>
+                        <div className="job-main">
+                          <span className={`job-status job-status-${job.status}`}>
+                            {job.status}
+                          </span>
+                          <strong>{job.prompt}</strong>
+                          <small>
+                            {job.model} · {job.durationSeconds}s · {job.ratio}
+                          </small>
+                        </div>
+                        <div className="job-assignment">
+                          <span>Profile</span>
+                          <strong>{assignedProfile?.name || "Unassigned"}</strong>
+                        </div>
+                        <div className="job-assignment">
+                          <span>Created</span>
+                          <strong>{relativeTime(job.createdAt)}</strong>
+                        </div>
+                        <div className="job-actions">
+                          {job.resultUrl && (
+                            <span className="job-result-ready">Result ready</span>
+                          )}
+                          <button
+                            className="mini-button danger"
+                            disabled={busy || terminal}
+                            onClick={() =>
+                              perform(
+                                () => cancelGenerationJob(job.id),
+                                "Generation job cancelled.",
+                              )
+                            }
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           </>
         )}

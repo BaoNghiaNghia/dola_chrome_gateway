@@ -1,8 +1,10 @@
 use crate::chrome;
 use crate::db;
 use crate::models::{
-    BrowserProfile, CreateProfileRequest, CreateWorkspaceRequest, ProxyCheckResult, ProxyPoolItem,
-    ProxyPoolItemRequest, ProxyPoolState, ProxySettings, ProxySettingsRequest, SystemInfo, Workspace,
+    BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest, CreateWorkspaceRequest,
+    GenerationJob, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest,
+    ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState, SystemInfo,
+    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, Workspace,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -265,6 +267,135 @@ pub fn rotate_profile_proxy(
 }
 
 #[tauri::command]
+pub fn get_scheduler_state(state: State<'_, AppState>) -> Result<SchedulerState, String> {
+    let mut profiles = db::list_profiles(&state.db_path)?;
+    decorate_running_state(&mut profiles, &state)?;
+    let ready_profiles = profiles
+        .iter()
+        .filter(|profile| !profile.is_running && profile.operational.availability == "ready")
+        .count();
+    let blocked_profiles = profiles
+        .iter()
+        .filter(|profile| !profile.is_running && profile.operational.availability != "ready")
+        .count();
+
+    Ok(SchedulerState {
+        enabled: db::get_scheduler_enabled(&state.db_path)?,
+        ready_profiles,
+        blocked_profiles,
+    })
+}
+
+#[tauri::command]
+pub fn set_scheduler_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<SchedulerState, String> {
+    db::set_scheduler_enabled(&state.db_path, enabled)?;
+    get_scheduler_state(state)
+}
+
+#[tauri::command]
+pub fn update_profile_operational_state(
+    profile_id: String,
+    request: UpdateProfileOperationalStateRequest,
+    state: State<'_, AppState>,
+) -> Result<ProfileOperationalState, String> {
+    db::update_profile_operational_state(&state.db_path, &profile_id, request)
+}
+
+#[tauri::command]
+pub fn clear_profile_operational_blocks(
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<ProfileOperationalState, String> {
+    db::clear_profile_operational_blocks(&state.db_path, &profile_id)
+}
+
+#[tauri::command]
+pub fn open_smart_profiles(
+    count: Option<usize>,
+    start_url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    if !db::get_scheduler_enabled(&state.db_path)? {
+        return Err("Smart Scheduler is disabled.".into());
+    }
+
+    let desired = count.unwrap_or(MAX_SIMULTANEOUS_PROFILES).clamp(1, MAX_SIMULTANEOUS_PROFILES);
+    let mut profiles = db::list_profiles(&state.db_path)?;
+    decorate_running_state(&mut profiles, &state)?;
+
+    let running_count = profiles.iter().filter(|profile| profile.is_running).count();
+    let capacity = MAX_SIMULTANEOUS_PROFILES.saturating_sub(running_count);
+    let target = desired.min(capacity);
+    if target == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut ready = profiles
+        .into_iter()
+        .filter(|profile| {
+            !profile.is_running
+                && profile.operational.scheduling_enabled
+                && profile.operational.availability == "ready"
+        })
+        .collect::<Vec<_>>();
+
+    ready.sort_by(|a, b| {
+        a.operational
+            .last_used_at
+            .cmp(&b.operational.last_used_at)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let selected = ready
+        .into_iter()
+        .take(target)
+        .map(|profile| profile.id)
+        .collect::<Vec<_>>();
+
+    if selected.is_empty() {
+        return Err(
+            "No scheduler-ready profiles are available. Verify sessions or clear cooldown/rate-limit states first."
+                .into(),
+        );
+    }
+
+    open_profile_ids(selected, start_url, &state)
+}
+
+#[tauri::command]
+pub fn list_generation_jobs(state: State<'_, AppState>) -> Result<Vec<GenerationJob>, String> {
+    db::list_generation_jobs(&state.db_path)
+}
+
+#[tauri::command]
+pub fn create_generation_job(
+    request: CreateGenerationJobRequest,
+    state: State<'_, AppState>,
+) -> Result<GenerationJob, String> {
+    db::create_generation_job(&state.db_path, request)
+}
+
+#[tauri::command]
+pub fn update_generation_job(
+    job_id: String,
+    request: UpdateGenerationJobRequest,
+    state: State<'_, AppState>,
+) -> Result<GenerationJob, String> {
+    db::update_generation_job(&state.db_path, &job_id, request)
+}
+
+#[tauri::command]
+pub fn cancel_generation_job(
+    job_id: String,
+    state: State<'_, AppState>,
+) -> Result<GenerationJob, String> {
+    db::cancel_generation_job(&state.db_path, &job_id)
+}
+
+#[tauri::command]
 pub fn get_proxy_pool_state(state: State<'_, AppState>) -> Result<ProxyPoolState, String> {
     refresh_processes(&state)?;
     Ok(ProxyPoolState {
@@ -470,6 +601,7 @@ fn open_profile_ids(
                     .map_err(|_| "Process state is unavailable.".to_string())?
                     .insert(profile.id.clone(), pid);
                 db::touch_last_opened(&state.db_path, &profile.id)?;
+                db::touch_profile_used(&state.db_path, &profile.id)?;
                 opened.push(profile.id.clone());
             }
             Err(error) => {

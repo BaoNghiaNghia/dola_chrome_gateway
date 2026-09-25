@@ -1,12 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   BrowserProfile,
+  CreateGenerationJobInput,
   CreateProfileInput,
+  GenerationJob,
+  ProfileOperationalState,
   ProxyCheckResult,
   ProxyPoolItem,
   ProxyPoolItemInput,
   ProxyPoolState,
+  SchedulerState,
   SystemInfo,
+  UpdateGenerationJobInput,
+  UpdateProfileOperationalStateInput,
   Workspace,
 } from "./types";
 
@@ -45,8 +51,44 @@ export async function openProfiles(profileIds: string[]): Promise<string[]> {
   });
 }
 
+export async function openSmartProfiles(count = 4): Promise<string[]> {
+  return invoke<string[]>("open_smart_profiles", {
+    count,
+    startUrl: "https://www.google.com/",
+  });
+}
+
 export async function closeProfile(profileId: string): Promise<void> {
   return invoke("close_profile", { profileId });
+}
+
+export async function getSchedulerState(): Promise<SchedulerState> {
+  if (!isTauri()) {
+    return { enabled: false, readyProfiles: 0, blockedProfiles: 0 };
+  }
+  return invoke<SchedulerState>("get_scheduler_state");
+}
+
+export async function setSchedulerEnabled(enabled: boolean): Promise<SchedulerState> {
+  return invoke<SchedulerState>("set_scheduler_enabled", { enabled });
+}
+
+export async function updateProfileOperationalState(
+  profileId: string,
+  request: UpdateProfileOperationalStateInput,
+): Promise<ProfileOperationalState> {
+  return invoke<ProfileOperationalState>("update_profile_operational_state", {
+    profileId,
+    request,
+  });
+}
+
+export async function clearProfileOperationalBlocks(
+  profileId: string,
+): Promise<ProfileOperationalState> {
+  return invoke<ProfileOperationalState>("clear_profile_operational_blocks", {
+    profileId,
+  });
 }
 
 export async function getProxyPoolState(): Promise<ProxyPoolState> {
@@ -81,6 +123,28 @@ export async function testProxyPoolItem(proxyId: string): Promise<ProxyCheckResu
 
 export async function rotateProxyPoolItem(proxyId: string): Promise<ProxyCheckResult> {
   return invoke<ProxyCheckResult>("rotate_proxy_pool_item", { proxyId });
+}
+
+export async function listGenerationJobs(): Promise<GenerationJob[]> {
+  if (!isTauri()) return [];
+  return invoke<GenerationJob[]>("list_generation_jobs");
+}
+
+export async function createGenerationJob(
+  request: CreateGenerationJobInput,
+): Promise<GenerationJob> {
+  return invoke<GenerationJob>("create_generation_job", { request });
+}
+
+export async function updateGenerationJob(
+  jobId: string,
+  request: UpdateGenerationJobInput,
+): Promise<GenerationJob> {
+  return invoke<GenerationJob>("update_generation_job", { jobId, request });
+}
+
+export async function cancelGenerationJob(jobId: string): Promise<GenerationJob> {
+  return invoke<GenerationJob>("cancel_generation_job", { jobId });
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
