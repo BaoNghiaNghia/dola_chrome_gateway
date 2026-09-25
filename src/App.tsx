@@ -27,6 +27,9 @@ import type {
   SystemInfo,
   Workspace,
 } from "./types";
+import seedanceLogo from "./assets/seedance-logo.svg";
+import profilesIcon from "./assets/profiles-icon.svg";
+import proxiesIcon from "./assets/proxies-icon.svg";
 import "./App.css";
 
 const SERVICES = ["Gmail", "Facebook", "Apple ID"];
@@ -595,10 +598,12 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">D</div>
+          <div className="brand-mark brand-logo">
+            <img src={seedanceLogo} alt="Seedance video generator logo" />
+          </div>
           <div>
             <strong>Dola Gateway</strong>
-            <span>Chrome Profile Manager</span>
+            <span>Seedance Profile Manager</span>
           </div>
         </div>
 
@@ -607,7 +612,9 @@ function App() {
             className={view === "profiles" ? "nav-item active" : "nav-item"}
             onClick={() => setView("profiles")}
           >
-            <span>◫</span>
+            <span className="nav-icon">
+              <img src={profilesIcon} alt="" aria-hidden="true" />
+            </span>
             Profiles
             <b>{profiles.length}</b>
           </button>
@@ -616,7 +623,9 @@ function App() {
             className={view === "proxies" ? "nav-item active" : "nav-item"}
             onClick={() => setView("proxies")}
           >
-            <span>⇄</span>
+            <span className="nav-icon">
+              <img src={proxiesIcon} alt="" aria-hidden="true" />
+            </span>
             Proxies
             <b>{enabledProxyCount}</b>
           </button>

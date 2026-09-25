@@ -1,0 +1,24 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="wire" x1="12" y1="13" x2="53" y2="51" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset=".5" stop-color="#D9CEFF"/>
+      <stop offset="1" stop-color="#8F70FF"/>
+    </linearGradient>
+    <linearGradient id="node" x1="13" y1="15" x2="48" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CDBBFF"/>
+      <stop offset="1" stop-color="#8466FF"/>
+    </linearGradient>
+  </defs>
+  <circle cx="12" cy="19" r="6" fill="#F7F5FF" stroke="#CBC1FF" stroke-width="2"/>
+  <circle cx="43" cy="37" r="6" fill="#272943" stroke="#9B84FF" stroke-width="2"/>
+  <circle cx="52" cy="48" r="6" fill="#F7F5FF" stroke="#CBC1FF" stroke-width="2"/>
+  <circle cx="12" cy="19" r="3" fill="url(#node)"/>
+  <circle cx="43" cy="37" r="3" fill="url(#node)"/>
+  <circle cx="52" cy="48" r="3" fill="url(#node)"/>
+  <path d="M18 19H34C40 19 43 23 43 29V31" stroke="url(#wire)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M34 14L40 19L34 24" stroke="url(#wire)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M37 40V42C37 46 34 48 30 48H18" stroke="url(#wire)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M22 43L16 48L22 53" stroke="url(#wire)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M48 37H52" stroke="url(#wire)" stroke-width="5" stroke-linecap="round"/>
+</svg>

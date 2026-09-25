@@ -1,0 +1,29 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="12" x2="108" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4937FF"/>
+      <stop offset="0.52" stop-color="#19155C"/>
+      <stop offset="1" stop-color="#7A2FFF"/>
+    </linearGradient>
+    <linearGradient id="ribbonA" x1="28" y1="34" x2="104" y2="94" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#57D7FF"/>
+      <stop offset="0.42" stop-color="#7968FF"/>
+      <stop offset="1" stop-color="#FF8CF7"/>
+    </linearGradient>
+    <linearGradient id="ribbonB" x1="20" y1="92" x2="104" y2="42" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6D59FF"/>
+      <stop offset="0.5" stop-color="#A975FF"/>
+      <stop offset="1" stop-color="#E9A2FF"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="5" y="5" width="118" height="118" rx="28" fill="url(#bg)"/>
+  <rect x="6" y="6" width="116" height="116" rx="27" stroke="#725AFF" stroke-opacity=".65" stroke-width="2"/>
+  <path d="M36 47C43 31 61 24 79 20C80 33 72 44 60 51C51 56 43 62 42 70C39 65 34 57 36 47Z" fill="url(#ribbonA)" filter="url(#glow)"/>
+  <path d="M28 82C38 66 55 63 72 66C90 69 100 60 105 49C108 67 99 86 83 96C68 105 48 104 33 95C25 90 22 86 28 82Z" fill="url(#ribbonB)" filter="url(#glow)"/>
+  <path d="M50 49C70 44 90 49 101 63C105 69 108 77 107 84C100 72 89 65 77 62C65 59 54 60 44 65C43 58 45 53 50 49Z" fill="url(#ribbonA)" fill-opacity=".82"/>
+  <path d="M56 54.5C56 50.7 60.2 48.5 63.3 50.6L82.4 63.3C85.2 65.2 85.2 69.4 82.4 71.3L63.3 84C60.2 86.1 56 83.9 56 80.1V54.5Z" fill="white" fill-opacity=".94"/>
+</svg>

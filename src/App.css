@@ -1425,3 +1425,56 @@ button:disabled {
     gap: 8px;
   }
 }
+
+
+/* Seedance brand + sidebar navigation icons */
+.brand-logo {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 13px;
+  background: transparent;
+  box-shadow:
+    0 8px 22px rgba(99, 88, 232, 0.24),
+    0 0 0 1px rgba(139, 113, 255, 0.16);
+}
+
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.nav-icon {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+}
+
+.nav-icon img {
+  width: 22px;
+  height: 22px;
+  display: block;
+  object-fit: contain;
+  opacity: 0.78;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    filter 0.15s ease;
+}
+
+.nav-item:hover .nav-icon img,
+.nav-item.active .nav-icon img {
+  opacity: 1;
+  transform: scale(1.04);
+  filter: drop-shadow(0 0 5px rgba(142, 115, 255, 0.32));
+}
+
+.nav-item.active .nav-icon {
+  filter: saturate(1.08);
+}
