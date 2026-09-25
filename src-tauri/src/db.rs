@@ -1,6 +1,6 @@
 use crate::models::{
-    BrowserProfile, CreateProfileRequest, ProxyCheckResult, ProxySettings, ProxySettingsRequest,
-    Workspace,
+    ActiveProxyAssignment, BrowserProfile, CreateProfileRequest, ProxyCheckResult, ProxyPoolItem,
+    ProxyPoolItemRequest, ProxySettings, ProxySettingsRequest, Workspace,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -48,6 +48,39 @@ pub fn init(db_path: &Path) -> Result<(), String> {
             FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS system_proxy_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT OR IGNORE INTO system_proxy_settings (id, enabled) VALUES (1, 0);
+
+        CREATE TABLE IF NOT EXISTS proxy_pool (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            protocol TEXT NOT NULL DEFAULT 'http',
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            auth_username TEXT,
+            rotation_url TEXT,
+            last_ip TEXT,
+            health TEXT NOT NULL DEFAULT 'unchecked',
+            last_latency_ms INTEGER,
+            last_checked_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS proxy_runtime_assignments (
+            profile_id TEXT PRIMARY KEY,
+            proxy_id TEXT NOT NULL UNIQUE,
+            public_ip TEXT,
+            assigned_at TEXT NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+            FOREIGN KEY (proxy_id) REFERENCES proxy_pool(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -87,6 +120,7 @@ fn row_to_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserProfile> {
         notes: row.get(6)?,
         profile_path: row.get(7)?,
         proxy: ProxySettings::default(),
+        active_proxy: None,
         is_running: false,
         pid: None,
         last_opened_at: row.get(8)?,
@@ -128,6 +162,349 @@ pub fn get_proxy_settings(db_path: &Path, profile_id: &str) -> Result<ProxySetti
     get_proxy_settings_conn(&conn, profile_id)
 }
 
+fn row_to_proxy_pool_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyPoolItem> {
+    let latency: Option<i64> = row.get(10)?;
+    Ok(ProxyPoolItem {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        enabled: row.get::<_, i64>(2)? != 0,
+        protocol: row.get(3)?,
+        host: row.get(4)?,
+        port: row.get::<_, i64>(5)?.max(0) as u16,
+        auth_username: row.get(6)?,
+        rotation_url: row.get(7)?,
+        last_ip: row.get(8)?,
+        health: row.get(9)?,
+        last_latency_ms: latency.map(|value| value.max(0) as u64),
+        last_checked_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
+fn get_active_proxy_assignment_conn(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<ActiveProxyAssignment>, String> {
+    conn.query_row(
+        "SELECT p.id, p.name, p.protocol, p.host, p.port,
+                a.public_ip, a.assigned_at
+         FROM proxy_runtime_assignments a
+         JOIN proxy_pool p ON p.id = a.proxy_id
+         WHERE a.profile_id = ?1",
+        params![profile_id],
+        |row| {
+            let protocol: String = row.get(2)?;
+            let host: String = row.get(3)?;
+            let port: i64 = row.get(4)?;
+            Ok(ActiveProxyAssignment {
+                proxy_id: row.get(0)?,
+                proxy_name: row.get(1)?,
+                endpoint: format!("{protocol}://{host}:{}", port.max(0)),
+                public_ip: row.get(5)?,
+                assigned_at: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_global_proxy_enabled(db_path: &Path) -> Result<bool, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT enabled FROM system_proxy_settings WHERE id = 1",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? != 0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn set_global_proxy_enabled(db_path: &Path, enabled: bool) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_proxy_settings SET enabled = ?1 WHERE id = 1",
+        params![enabled as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_proxy_pool(db_path: &Path) -> Result<Vec<ProxyPoolItem>, String> {
+    let conn = connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, enabled, protocol, host, port, auth_username, rotation_url,
+                    last_ip, health, last_latency_ms, last_checked_at, created_at, updated_at
+             FROM proxy_pool
+             ORDER BY created_at ASC, name COLLATE NOCASE ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let items = stmt
+        .query_map([], row_to_proxy_pool_item)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(items)
+}
+
+pub fn get_proxy_pool_item(db_path: &Path, proxy_id: &str) -> Result<Option<ProxyPoolItem>, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT id, name, enabled, protocol, host, port, auth_username, rotation_url,
+                last_ip, health, last_latency_ms, last_checked_at, created_at, updated_at
+         FROM proxy_pool WHERE id = ?1",
+        params![proxy_id],
+        row_to_proxy_pool_item,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+pub fn create_proxy_pool_item(
+    db_path: &Path,
+    request: ProxyPoolItemRequest,
+) -> Result<ProxyPoolItem, String> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err("Proxy name is required.".into());
+    }
+    if request.host.trim().is_empty() {
+        return Err("Proxy host is required.".into());
+    }
+    if request.port == 0 {
+        return Err("Proxy port is required.".into());
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let conn = connection(db_path)?;
+    conn.execute(
+        "INSERT INTO proxy_pool
+         (id, name, enabled, protocol, host, port, auth_username, rotation_url,
+          health, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unchecked', ?9, ?9)",
+        params![
+            &id,
+            name,
+            request.enabled as i64,
+            request.protocol.trim().to_lowercase(),
+            request.host.trim(),
+            request.port as i64,
+            request
+                .auth_username
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            request
+                .rotation_url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            &now
+        ],
+    )
+    .map_err(|e| format!("Cannot create proxy: {e}"))?;
+
+    get_proxy_pool_item(db_path, &id)?.ok_or_else(|| "Created proxy could not be loaded.".into())
+}
+
+pub fn update_proxy_pool_item(
+    db_path: &Path,
+    proxy_id: &str,
+    request: ProxyPoolItemRequest,
+) -> Result<ProxyPoolItem, String> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err("Proxy name is required.".into());
+    }
+
+    let conn = connection(db_path)?;
+    let now = Utc::now().to_rfc3339();
+    let changed = conn
+        .execute(
+            "UPDATE proxy_pool
+             SET name = ?1, enabled = ?2, protocol = ?3, host = ?4, port = ?5,
+                 auth_username = ?6, rotation_url = ?7, health = 'unchecked',
+                 updated_at = ?8
+             WHERE id = ?9",
+            params![
+                name,
+                request.enabled as i64,
+                request.protocol.trim().to_lowercase(),
+                request.host.trim(),
+                request.port as i64,
+                request
+                    .auth_username
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty()),
+                request
+                    .rotation_url
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty()),
+                &now,
+                proxy_id
+            ],
+        )
+        .map_err(|e| format!("Cannot update proxy: {e}"))?;
+
+    if changed == 0 {
+        return Err("Proxy does not exist.".into());
+    }
+    get_proxy_pool_item(db_path, proxy_id)?.ok_or_else(|| "Updated proxy could not be loaded.".into())
+}
+
+pub fn is_pool_proxy_assigned(db_path: &Path, proxy_id: &str) -> Result<bool, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM proxy_runtime_assignments WHERE proxy_id = ?1)",
+        params![proxy_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn delete_proxy_pool_item(db_path: &Path, proxy_id: &str) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    let assigned: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM proxy_runtime_assignments WHERE proxy_id = ?1)",
+            params![proxy_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if assigned {
+        return Err("This proxy is assigned to a running profile. Close that profile first.".into());
+    }
+
+    conn.execute("DELETE FROM proxy_pool WHERE id = ?1", params![proxy_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn record_pool_proxy_check(
+    db_path: &Path,
+    proxy_id: &str,
+    result: &ProxyCheckResult,
+) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE proxy_pool
+         SET last_ip = COALESCE(?1, last_ip),
+             health = ?2,
+             last_latency_ms = ?3,
+             last_checked_at = ?4,
+             updated_at = ?4
+         WHERE id = ?5",
+        params![
+            result.public_ip.as_deref(),
+            if result.reachable { "healthy" } else { "offline" },
+            result.latency_ms.map(|value| value as i64),
+            result.checked_at.as_str(),
+            proxy_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn record_pool_proxy_failure(
+    db_path: &Path,
+    proxy_id: &str,
+    checked_at: &str,
+) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE proxy_pool
+         SET health = 'offline', last_latency_ms = NULL, last_checked_at = ?1, updated_at = ?1
+         WHERE id = ?2",
+        params![checked_at, proxy_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn assign_pool_proxy(
+    db_path: &Path,
+    profile_id: &str,
+    proxy_id: &str,
+    public_ip: Option<&str>,
+) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "INSERT INTO proxy_runtime_assignments (profile_id, proxy_id, public_ip, assigned_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![profile_id, proxy_id, public_ip, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| format!("Cannot assign proxy to profile: {e}"))?;
+    Ok(())
+}
+
+pub fn release_profile_proxy_assignment(db_path: &Path, profile_id: &str) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "DELETE FROM proxy_runtime_assignments WHERE profile_id = ?1",
+        params![profile_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn release_stale_proxy_assignments(
+    db_path: &Path,
+    running_profile_ids: &[String],
+) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    if running_profile_ids.is_empty() {
+        conn.execute("DELETE FROM proxy_runtime_assignments", [])
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(running_profile_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM proxy_runtime_assignments WHERE profile_id NOT IN ({placeholders})"
+    );
+    let values = running_profile_ids
+        .iter()
+        .map(|value| value as &dyn rusqlite::ToSql)
+        .collect::<Vec<_>>();
+    conn.execute(&sql, values.as_slice())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_available_pool_proxies(
+    db_path: &Path,
+    limit: usize,
+) -> Result<Vec<ProxyPoolItem>, String> {
+    let conn = connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, enabled, protocol, host, port, auth_username, rotation_url,
+                    last_ip, health, last_latency_ms, last_checked_at, created_at, updated_at
+             FROM proxy_pool p
+             WHERE p.enabled = 1
+               AND NOT EXISTS (
+                   SELECT 1 FROM proxy_runtime_assignments a WHERE a.proxy_id = p.id
+               )
+             ORDER BY
+               CASE p.health WHEN 'healthy' THEN 0 WHEN 'unchecked' THEN 1 ELSE 2 END,
+               p.created_at ASC
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let items = stmt
+        .query_map(params![limit as i64], row_to_proxy_pool_item)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(items)
+}
+
 pub fn list_profiles(db_path: &Path) -> Result<Vec<BrowserProfile>, String> {
     let conn = connection(db_path)?;
     let mut stmt = conn
@@ -147,6 +524,7 @@ pub fn list_profiles(db_path: &Path) -> Result<Vec<BrowserProfile>, String> {
 
     for profile in &mut profiles {
         profile.proxy = get_proxy_settings_conn(&conn, &profile.id)?;
+        profile.active_proxy = get_active_proxy_assignment_conn(&conn, &profile.id)?;
     }
 
     Ok(profiles)
@@ -167,6 +545,7 @@ pub fn get_profile(db_path: &Path, id: &str) -> Result<Option<BrowserProfile>, S
 
     if let Some(profile) = profile.as_mut() {
         profile.proxy = get_proxy_settings_conn(&conn, id)?;
+        profile.active_proxy = get_active_proxy_assignment_conn(&conn, id)?;
     }
 
     Ok(profile)

@@ -31,6 +31,41 @@ export type ProxyCheckResult = {
   message: string;
 };
 
+export type ProxyPoolItem = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  protocol: "http" | "https" | "socks5";
+  host: string;
+  port: number;
+  authUsername: string | null;
+  rotationUrl: string | null;
+  lastIp: string | null;
+  health: "unchecked" | "healthy" | "offline";
+  lastLatencyMs: number | null;
+  lastCheckedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProxyPoolItemInput = Pick<
+  ProxyPoolItem,
+  "name" | "enabled" | "protocol" | "host" | "port" | "authUsername" | "rotationUrl"
+>;
+
+export type ProxyPoolState = {
+  enabled: boolean;
+  items: ProxyPoolItem[];
+};
+
+export type ActiveProxyAssignment = {
+  proxyId: string;
+  proxyName: string;
+  endpoint: string;
+  publicIp: string | null;
+  assignedAt: string;
+};
+
 export type BrowserProfile = {
   id: string;
   name: string;
@@ -41,6 +76,7 @@ export type BrowserProfile = {
   notes: string | null;
   profilePath: string;
   proxy: ProxySettings;
+  activeProxy: ActiveProxyAssignment | null;
   isRunning: boolean;
   pid: number | null;
   lastOpenedAt: string | null;
@@ -69,5 +105,4 @@ export type CreateProfileInput = {
   services: string[];
   tags: string[];
   notes?: string | null;
-  proxy?: ProxySettingsInput;
 };

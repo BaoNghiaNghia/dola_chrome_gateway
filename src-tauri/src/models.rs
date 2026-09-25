@@ -58,6 +58,54 @@ pub struct ProxyCheckResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProxyPoolItem {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub protocol: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_username: Option<String>,
+    pub rotation_url: Option<String>,
+    pub last_ip: Option<String>,
+    pub health: String,
+    pub last_latency_ms: Option<u64>,
+    pub last_checked_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolItemRequest {
+    pub name: String,
+    pub enabled: bool,
+    pub protocol: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_username: Option<String>,
+    pub rotation_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolState {
+    pub enabled: bool,
+    pub items: Vec<ProxyPoolItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveProxyAssignment {
+    pub proxy_id: String,
+    pub proxy_name: String,
+    pub endpoint: String,
+    pub public_ip: Option<String>,
+    pub assigned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserProfile {
     pub id: String,
     pub name: String,
@@ -68,6 +116,7 @@ pub struct BrowserProfile {
     pub notes: Option<String>,
     pub profile_path: String,
     pub proxy: ProxySettings,
+    pub active_proxy: Option<ActiveProxyAssignment>,
     pub is_running: bool,
     pub pid: Option<u32>,
     pub last_opened_at: Option<String>,

@@ -3,23 +3,27 @@ import type { FormEvent } from "react";
 import {
   closeProfile,
   createProfile,
+  createProxyPoolItem,
   createWorkspace,
   deleteProfile,
+  deleteProxyPoolItem,
   deleteWorkspace,
+  getProxyPoolState,
   getSystemInfo,
   listProfiles,
   listWorkspaces,
   openProfiles,
-  rotateProfileProxy,
-  testProfileProxy,
-  updateProfileProxy,
+  rotateProxyPoolItem,
+  setProxyPoolEnabled,
+  testProxyPoolItem,
+  updateProxyPoolItem,
 } from "./api";
 import type {
   BrowserProfile,
   CreateProfileInput,
-  ProxyCheckResult,
-  ProxySettings,
-  ProxySettingsInput,
+  ProxyPoolItem,
+  ProxyPoolItemInput,
+  ProxyPoolState,
   SystemInfo,
   Workspace,
 } from "./types";
@@ -28,13 +32,15 @@ import "./App.css";
 const SERVICES = ["Gmail", "Facebook", "Apple ID"];
 const MAX_SELECTED = 4;
 
-const DEFAULT_PROXY: ProxySettingsInput = {
-  enabled: false,
+type View = "profiles" | "proxies";
+
+const DEFAULT_PROXY_ITEM: ProxyPoolItemInput = {
+  name: "",
+  enabled: true,
   protocol: "http",
   host: "",
   port: 0,
   authUsername: null,
-  rotationMode: "sticky",
   rotationUrl: null,
 };
 
@@ -66,145 +72,6 @@ function errorMessage(error: unknown) {
       : "Something went wrong.";
 }
 
-function proxyInput(proxy: ProxySettings): ProxySettingsInput {
-  return {
-    enabled: proxy.enabled,
-    protocol: proxy.protocol,
-    host: proxy.host,
-    port: proxy.port,
-    authUsername: proxy.authUsername,
-    rotationMode: proxy.rotationMode,
-    rotationUrl: proxy.rotationUrl,
-  };
-}
-
-function ProxyFields({
-  value,
-  onChange,
-}: {
-  value: ProxySettingsInput;
-  onChange: (next: ProxySettingsInput) => void;
-}) {
-  const set = <K extends keyof ProxySettingsInput>(
-    key: K,
-    next: ProxySettingsInput[K],
-  ) => onChange({ ...value, [key]: next });
-
-  return (
-    <div className="proxy-fields">
-      <label className="toggle-row">
-        <span>
-          <strong>Use proxy</strong>
-          <small>Proxy is only attached to Chrome when this is enabled.</small>
-        </span>
-        <input
-          type="checkbox"
-          checked={value.enabled}
-          onChange={(event) => set("enabled", event.target.checked)}
-        />
-      </label>
-
-      {value.enabled && (
-        <>
-          <div className="form-grid proxy-grid">
-            <label>
-              Protocol
-              <select
-                value={value.protocol}
-                onChange={(event) =>
-                  set("protocol", event.target.value as ProxySettingsInput["protocol"])
-                }
-              >
-                <option value="http">HTTP</option>
-                <option value="https">HTTPS</option>
-                <option value="socks5">SOCKS5</option>
-              </select>
-            </label>
-            <label>
-              Host
-              <input
-                value={value.host}
-                onChange={(event) => set("host", event.target.value)}
-                placeholder="gateway.proxy.com"
-              />
-            </label>
-            <label>
-              Port
-              <input
-                type="number"
-                min={1}
-                max={65535}
-                value={value.port || ""}
-                onChange={(event) => set("port", Number(event.target.value) || 0)}
-                placeholder="8000"
-              />
-            </label>
-            <label>
-              Auth username
-              <input
-                value={value.authUsername ?? ""}
-                onChange={(event) =>
-                  set("authUsername", event.target.value.trim() || null)
-                }
-                placeholder="Optional"
-              />
-            </label>
-          </div>
-
-          <div className="field-block">
-            <span className="field-label">Rotation mode</span>
-            <div className="rotation-picker">
-              {[
-                ["sticky", "Sticky"],
-                ["rotate_on_launch", "Rotate on launch"],
-                ["manual", "Manual rotate"],
-              ].map(([mode, label]) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={value.rotationMode === mode ? "chip active" : "chip"}
-                  onClick={() =>
-                    set(
-                      "rotationMode",
-                      mode as ProxySettingsInput["rotationMode"],
-                    )
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {(value.rotationMode === "rotate_on_launch" ||
-            value.rotationMode === "manual") && (
-            <label>
-              Rotation URL
-              <input
-                value={value.rotationUrl ?? ""}
-                onChange={(event) =>
-                  set("rotationUrl", event.target.value.trim() || null)
-                }
-                placeholder="https://provider.example/rotate/..."
-              />
-              <small className="field-help">
-                Called only before launch or when you explicitly press Rotate.
-              </small>
-            </label>
-          )}
-
-          {value.authUsername && (
-            <div className="proxy-note">
-              Proxy password is intentionally not stored in SQLite. Chrome may ask for
-              proxy credentials when the upstream requires authentication.
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 type ProfileFormProps = {
   onClose: () => void;
   onSaved: (profile: BrowserProfile) => void;
@@ -218,7 +85,6 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
     services: ["Gmail"],
     tags: [],
     notes: "",
-    proxy: { ...DEFAULT_PROXY },
   });
   const [tags, setTags] = useState("");
   const [saving, setSaving] = useState(false);
@@ -262,7 +128,7 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <form
-        className="modal-card modal-card-wide"
+        className="modal-card"
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={submit}
       >
@@ -270,9 +136,12 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
           <div>
             <span className="eyebrow">NEW PROFILE</span>
             <h2>Create Chrome profile</h2>
-            <p>Session data stays isolated in a dedicated Chrome user-data directory.</p>
+            <p>
+              Login session data stays isolated in this profile. Proxy routing is
+              managed centrally from the Proxies tab.
+            </p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button type="button" className="icon-button" onClick={onClose}>
             ×
           </button>
         </div>
@@ -322,17 +191,6 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
           </div>
         </div>
 
-        <div className="proxy-section">
-          <div className="section-title">
-            <span>Network / Proxy</span>
-            <small>Optional · OFF by default</small>
-          </div>
-          <ProxyFields
-            value={form.proxy ?? DEFAULT_PROXY}
-            onChange={(proxy) => setForm({ ...form, proxy })}
-          />
-        </div>
-
         <label>
           Tags
           <input
@@ -367,174 +225,219 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
   );
 }
 
-function ProxyModal({
-  profile,
+function ProxyForm({
+  initial,
   onClose,
-  onChanged,
+  onSaved,
 }: {
-  profile: BrowserProfile;
+  initial?: ProxyPoolItem;
   onClose: () => void;
-  onChanged: () => Promise<void>;
+  onSaved: () => Promise<void>;
 }) {
-  const [form, setForm] = useState<ProxySettingsInput>(proxyInput(profile.proxy));
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ProxyCheckResult | null>(null);
+  const [form, setForm] = useState<ProxyPoolItemInput>(
+    initial
+      ? {
+          name: initial.name,
+          enabled: initial.enabled,
+          protocol: initial.protocol,
+          host: initial.host,
+          port: initial.port,
+          authUsername: initial.authUsername,
+          rotationUrl: initial.rotationUrl,
+        }
+      : { ...DEFAULT_PROXY_ITEM },
+  );
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  async function persist() {
-    await updateProfileProxy(profile.id, form);
-  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!form.name.trim() || !form.host.trim() || !form.port) return;
 
-  async function save() {
-    setBusy(true);
+    setSaving(true);
     setError("");
     try {
-      await persist();
-      await onChanged();
+      const request: ProxyPoolItemInput = {
+        ...form,
+        name: form.name.trim(),
+        host: form.host.trim(),
+        authUsername: form.authUsername?.trim() || null,
+        rotationUrl: form.rotationUrl?.trim() || null,
+      };
+
+      if (initial) {
+        await updateProxyPoolItem(initial.id, request);
+      } else {
+        await createProxyPoolItem(request);
+      }
+      await onSaved();
       onClose();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function test() {
-    setBusy(true);
-    setError("");
-    setResult(null);
-    try {
-      await persist();
-      const check = await testProfileProxy(profile.id);
-      setResult(check);
-      await onChanged();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function rotate() {
-    setBusy(true);
-    setError("");
-    setResult(null);
-    try {
-      await persist();
-      const check = await rotateProfileProxy(profile.id);
-      setResult(check);
-      await onChanged();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div
-        className="modal-card proxy-modal"
+      <form
+        className="modal-card proxy-editor"
         onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={submit}
       >
         <div className="modal-heading">
           <div>
-            <span className="eyebrow">PROFILE NETWORK</span>
-            <h2>{profile.name}</h2>
+            <span className="eyebrow">PROXY POOL</span>
+            <h2>{initial ? "Edit rotating proxy" : "Add rotating proxy"}</h2>
             <p>
-              Proxy settings remain unchanged for the full lifetime of an open Chrome
-              session.
+              Each enabled slot can be assigned to one running Chrome profile at a
+              time.
             </p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button type="button" className="icon-button" onClick={onClose}>
             ×
           </button>
         </div>
 
-        {profile.isRunning && (
-          <div className="proxy-lock-note">
-            This profile is running. Close Chrome before changing or rotating its proxy.
+        <label className="toggle-row proxy-item-toggle">
+          <span>
+            <strong>Available for allocation</strong>
+            <small>Disabled proxies stay in the pool but will not be assigned.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={form.enabled}
+            onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+          />
+        </label>
+
+        <label>
+          Proxy name
+          <input
+            autoFocus
+            value={form.name}
+            onChange={(event) => setForm({ ...form, name: event.target.value })}
+            placeholder="US Rotating 01"
+          />
+        </label>
+
+        <div className="form-grid proxy-form-grid">
+          <label>
+            Protocol
+            <select
+              value={form.protocol}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  protocol: event.target.value as ProxyPoolItemInput["protocol"],
+                })
+              }
+            >
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </label>
+
+          <label>
+            Host
+            <input
+              value={form.host}
+              onChange={(event) => setForm({ ...form, host: event.target.value })}
+              placeholder="gateway.proxy.com"
+            />
+          </label>
+
+          <label>
+            Port
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              value={form.port || ""}
+              onChange={(event) =>
+                setForm({ ...form, port: Number(event.target.value) || 0 })
+              }
+              placeholder="8000"
+            />
+          </label>
+
+          <label>
+            Auth username
+            <input
+              value={form.authUsername ?? ""}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  authUsername: event.target.value.trim() || null,
+                })
+              }
+              placeholder="Optional"
+            />
+          </label>
+        </div>
+
+        <label>
+          Rotation URL
+          <input
+            value={form.rotationUrl ?? ""}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                rotationUrl: event.target.value.trim() || null,
+              })
+            }
+            placeholder="https://provider.example/rotate/..."
+          />
+          <small className="field-help">
+            If present, the system calls this once before assigning this proxy to a
+            newly opened profile.
+          </small>
+        </label>
+
+        {form.authUsername && (
+          <div className="proxy-note">
+            Proxy password is not stored in SQLite. Upstream authentication may still
+            require Chrome/provider-side handling.
           </div>
         )}
 
-        <ProxyFields value={form} onChange={setForm} />
-
-        <div className="proxy-health-card">
-          <div>
-            <span>Current health</span>
-            <strong className={`health-${profile.proxy.health}`}>
-              {profile.proxy.enabled ? profile.proxy.health : "disabled"}
-            </strong>
-          </div>
-          <div>
-            <span>Last IP</span>
-            <strong>{profile.proxy.lastIp || "—"}</strong>
-          </div>
-          <div>
-            <span>Latency</span>
-            <strong>
-              {profile.proxy.lastLatencyMs != null
-                ? `${profile.proxy.lastLatencyMs} ms`
-                : "—"}
-            </strong>
-          </div>
-        </div>
-
-        {result && <div className="banner success">{result.message}</div>}
         {error && <div className="inline-error">{error}</div>}
 
-        <div className="modal-actions proxy-actions">
-          <div>
-            <button
-              type="button"
-              className="button secondary"
-              disabled={busy || profile.isRunning || !form.enabled}
-              onClick={() => void test()}
-            >
-              Test proxy
-            </button>
-            <button
-              type="button"
-              className="button secondary"
-              disabled={
-                busy ||
-                profile.isRunning ||
-                !form.enabled ||
-                !form.rotationUrl
-              }
-              onClick={() => void rotate()}
-            >
-              Rotate now
-            </button>
-          </div>
-          <div>
-            <button type="button" className="button secondary" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="button primary"
-              disabled={busy || profile.isRunning}
-              onClick={() => void save()}
-            >
-              {busy ? "Saving…" : "Save proxy"}
-            </button>
-          </div>
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="button primary"
+            disabled={
+              saving || !form.name.trim() || !form.host.trim() || !form.port
+            }
+          >
+            {saving ? "Saving…" : initial ? "Save proxy" : "Add proxy"}
+          </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }
 
 function App() {
+  const [view, setView] = useState<View>("profiles");
   const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
+  const [proxyPool, setProxyPool] = useState<ProxyPoolState>({
+    enabled: false,
+    items: [],
+  });
   const [selected, setSelected] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
-  const [proxyProfileId, setProxyProfileId] = useState<string | null>(null);
+  const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null);
+  const [showProxyForm, setShowProxyForm] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{
@@ -544,16 +447,21 @@ function App() {
 
   async function refresh() {
     try {
-      const [nextProfiles, nextWorkspaces, nextSystem] = await Promise.all([
-        listProfiles(),
-        listWorkspaces(),
-        getSystemInfo(),
-      ]);
+      const [nextProfiles, nextWorkspaces, nextSystem, nextProxyPool] =
+        await Promise.all([
+          listProfiles(),
+          listWorkspaces(),
+          getSystemInfo(),
+          getProxyPoolState(),
+        ]);
       setProfiles(nextProfiles);
       setWorkspaces(nextWorkspaces);
       setSystem(nextSystem);
+      setProxyPool(nextProxyPool);
       setSelected((current) =>
-        current.filter((id) => nextProfiles.some((profile) => profile.id === id)),
+        current.filter((id) =>
+          nextProfiles.some((profile) => profile.id === id),
+        ),
       );
     } catch (error) {
       setBanner({ kind: "error", text: errorMessage(error) });
@@ -571,7 +479,9 @@ function App() {
       "All",
       ...Array.from(
         new Set(
-          profiles.map((profile) => profile.groupName).filter(Boolean) as string[],
+          profiles
+            .map((profile) => profile.groupName)
+            .filter(Boolean) as string[],
         ),
       ).sort(),
     ],
@@ -588,8 +498,9 @@ function App() {
           profile.name,
           profile.email,
           profile.groupName,
-          profile.proxy.host,
-          profile.proxy.lastIp,
+          profile.activeProxy?.proxyName,
+          profile.activeProxy?.publicIp,
+          profile.activeProxy?.endpoint,
           ...profile.tags,
           ...profile.services,
         ]
@@ -600,9 +511,15 @@ function App() {
   }, [profiles, query, group]);
 
   const runningCount = profiles.filter((profile) => profile.isRunning).length;
-  const proxyCount = profiles.filter((profile) => profile.proxy.enabled).length;
-  const proxyProfile =
-    profiles.find((profile) => profile.id === proxyProfileId) ?? null;
+  const enabledProxyCount = proxyPool.items.filter((proxy) => proxy.enabled).length;
+  const healthyProxyCount = proxyPool.items.filter(
+    (proxy) => proxy.enabled && proxy.health === "healthy",
+  ).length;
+  const inUseProxyIds = new Set(
+    profiles
+      .filter((profile) => profile.isRunning && profile.activeProxy)
+      .map((profile) => profile.activeProxy!.proxyId),
+  );
 
   function toggleSelected(id: string) {
     setBanner(null);
@@ -642,11 +559,36 @@ function App() {
     setWorkspaceName("");
   }
 
-  function proxyLabel(profile: BrowserProfile) {
-    if (!profile.proxy.enabled) return "OFF";
-    if (profile.proxy.health === "healthy") return profile.proxy.lastIp || "Healthy";
-    if (profile.proxy.health === "offline") return "Offline";
-    return "Unchecked";
+  async function toggleProxyPool(enabled: boolean) {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const next = await setProxyPoolEnabled(enabled);
+      setProxyPool(next);
+      setBanner({
+        kind: "success",
+        text: enabled
+          ? "System Proxy Pool enabled. New profile launches will use one proxy per profile."
+          : "System Proxy Pool disabled. Running profiles keep their current route until closed.",
+      });
+      await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function profileProxyLabel(profile: BrowserProfile) {
+    if (profile.activeProxy) {
+      return profile.activeProxy.publicIp || profile.activeProxy.proxyName;
+    }
+    return proxyPool.enabled ? "Pool ready" : "OFF";
+  }
+
+  function profileProxyClass(profile: BrowserProfile) {
+    if (profile.activeProxy) return "proxy-healthy";
+    return proxyPool.enabled ? "proxy-unchecked" : "proxy-disabled";
   }
 
   return (
@@ -661,14 +603,29 @@ function App() {
         </div>
 
         <nav>
-          <button className="nav-item active">
+          <button
+            className={view === "profiles" ? "nav-item active" : "nav-item"}
+            onClick={() => setView("profiles")}
+          >
             <span>◫</span>
             Profiles
             <b>{profiles.length}</b>
           </button>
+
+          <button
+            className={view === "proxies" ? "nav-item active" : "nav-item"}
+            onClick={() => setView("proxies")}
+          >
+            <span>⇄</span>
+            Proxies
+            <b>{enabledProxyCount}</b>
+          </button>
+
           <div className="nav-caption">WORKSPACES</div>
           {workspaces.length === 0 ? (
-            <p className="sidebar-empty">Select profiles and save your first workspace.</p>
+            <p className="sidebar-empty">
+              Select profiles and save your first workspace.
+            </p>
           ) : (
             workspaces.map((workspace) => (
               <div className="workspace-row" key={workspace.id}>
@@ -702,7 +659,9 @@ function App() {
         </nav>
 
         <div className="sidebar-status">
-          <div className={system?.chromePath ? "status-dot online" : "status-dot"} />
+          <div
+            className={system?.chromePath ? "status-dot online" : "status-dot"}
+          />
           <div>
             <strong>
               {system?.chromePath ? "Chrome detected" : "Chrome not detected"}
@@ -715,226 +674,481 @@ function App() {
       </aside>
 
       <main className="content">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">LOCAL BROWSER CONTROL</span>
-            <h1>Profiles</h1>
-            <p>Persistent sessions with optional per-profile rotating proxy.</p>
-          </div>
-          <button className="button primary" onClick={() => setShowCreate(true)}>
-            <span className="plus">＋</span> New profile
-          </button>
-        </header>
-
-        {banner && <div className={`banner ${banner.kind}`}>{banner.text}</div>}
-
-        <section className="stats-grid">
-          <div className="stat-card">
-            <span>Total profiles</span>
-            <strong>{profiles.length}</strong>
-            <small>Persistent Chrome sessions</small>
-          </div>
-          <div className="stat-card">
-            <span>Running now</span>
-            <strong>{runningCount}</strong>
-            <small>Maximum {system?.maxSimultaneousProfiles ?? 4} at once</small>
-          </div>
-          <div className="stat-card">
-            <span>Proxy enabled</span>
-            <strong>{proxyCount}</strong>
-            <small>Fail-closed before Chrome launch</small>
-          </div>
-          <div className="stat-card system-card">
-            <span>Chrome</span>
-            <strong>{system?.chromePath ? "Ready" : "Check setup"}</strong>
-            <small title={system?.chromePath ?? undefined}>
-              {system?.chromePath ? "Executable found" : "Executable not found"}
-            </small>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="toolbar">
-            <div className="search-box">
-              <span>⌕</span>
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search profiles, IP, proxy, tags…"
-              />
-            </div>
-            <select value={group} onChange={(event) => setGroup(event.target.value)}>
-              {groups.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-            <div className="toolbar-spacer" />
-            <span className="selected-count">
-              {selected.length} / {MAX_SELECTED} selected
-            </span>
-            <button
-              className="button primary"
-              disabled={selected.length === 0 || busy}
-              onClick={() =>
-                perform(
-                  () => openProfiles(selected),
-                  `${selected.length} profile(s) opened.`,
-                )
-              }
-            >
-              ▶ Open selected
-            </button>
-          </div>
-
-          {selected.length > 0 && (
-            <div className="workspace-builder">
-              <span>Save this selection as a workspace</span>
-              <input
-                value={workspaceName}
-                onChange={(event) => setWorkspaceName(event.target.value)}
-                placeholder="e.g. Facebook Team A"
-              />
-              <button
-                className="button secondary"
-                onClick={() => void saveWorkspace()}
-                disabled={!workspaceName.trim() || busy}
-              >
-                Save workspace
-              </button>
-            </div>
-          )}
-
-          <div className="table-head">
-            <span />
-            <span>Profile</span>
-            <span>Services</span>
-            <span>Proxy</span>
-            <span>Group</span>
-            <span>Status</span>
-            <span>Last opened</span>
-            <span />
-          </div>
-
-          <div className="profile-list">
-            {visibleProfiles.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">◫</div>
-                <h3>{profiles.length ? "No matching profiles" : "Create your first profile"}</h3>
+        {view === "profiles" ? (
+          <>
+            <header className="topbar">
+              <div>
+                <span className="eyebrow">LOCAL BROWSER CONTROL</span>
+                <h1>Profiles</h1>
                 <p>
-                  {profiles.length
-                    ? "Try another search or group."
-                    : "Each profile gets its own Chrome user-data directory so sessions never mix."}
+                  Persistent sessions with optional system-wide rotating proxy pool.
                 </p>
-                {!profiles.length && (
-                  <button className="button primary" onClick={() => setShowCreate(true)}>
-                    Create profile
+              </div>
+              <button className="button primary" onClick={() => setShowCreate(true)}>
+                <span className="plus">＋</span> New profile
+              </button>
+            </header>
+
+            {banner && (
+              <div className={`banner ${banner.kind}`}>{banner.text}</div>
+            )}
+
+            <section className="stats-grid">
+              <div className="stat-card">
+                <span>Total profiles</span>
+                <strong>{profiles.length}</strong>
+                <small>Persistent Chrome sessions</small>
+              </div>
+              <div className="stat-card">
+                <span>Running now</span>
+                <strong>{runningCount}</strong>
+                <small>
+                  Maximum {system?.maxSimultaneousProfiles ?? 4} at once
+                </small>
+              </div>
+              <div className="stat-card">
+                <span>Proxy Pool</span>
+                <strong>{proxyPool.enabled ? "ON" : "OFF"}</strong>
+                <small>
+                  {proxyPool.enabled
+                    ? `${enabledProxyCount} proxy slots available`
+                    : "Direct connection for new launches"}
+                </small>
+              </div>
+              <div className="stat-card system-card">
+                <span>Chrome</span>
+                <strong>{system?.chromePath ? "Ready" : "Check setup"}</strong>
+                <small>
+                  {system?.chromePath ? "Executable found" : "Executable not found"}
+                </small>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="toolbar">
+                <div className="search-box">
+                  <span>⌕</span>
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search profiles, IP, proxy, tags…"
+                  />
+                </div>
+                <select
+                  value={group}
+                  onChange={(event) => setGroup(event.target.value)}
+                >
+                  {groups.map((item) => (
+                    <option key={item}>{item}</option>
+                  ))}
+                </select>
+                <div className="toolbar-spacer" />
+                <span className="selected-count">
+                  {selected.length} / {MAX_SELECTED} selected
+                </span>
+                <button
+                  className="button primary"
+                  disabled={selected.length === 0 || busy}
+                  onClick={() =>
+                    perform(
+                      () => openProfiles(selected),
+                      proxyPool.enabled
+                        ? `${selected.length} profile(s) opened with Proxy Pool allocation.`
+                        : `${selected.length} profile(s) opened.`,
+                    )
+                  }
+                >
+                  ▶ Open selected
+                </button>
+              </div>
+
+              {selected.length > 0 && (
+                <div className="workspace-builder">
+                  <span>Save this selection as a workspace</span>
+                  <input
+                    value={workspaceName}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                    placeholder="e.g. Facebook Team A"
+                  />
+                  <button
+                    className="button secondary"
+                    onClick={() => void saveWorkspace()}
+                    disabled={!workspaceName.trim() || busy}
+                  >
+                    Save workspace
                   </button>
+                </div>
+              )}
+
+              <div className="table-head">
+                <span />
+                <span>Profile</span>
+                <span>Services</span>
+                <span>Proxy</span>
+                <span>Group</span>
+                <span>Status</span>
+                <span>Last opened</span>
+                <span />
+              </div>
+
+              <div className="profile-list">
+                {visibleProfiles.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="empty-icon">◫</div>
+                    <h3>
+                      {profiles.length
+                        ? "No matching profiles"
+                        : "Create your first profile"}
+                    </h3>
+                    <p>
+                      {profiles.length
+                        ? "Try another search or group."
+                        : "Each profile gets its own Chrome user-data directory so sessions never mix."}
+                    </p>
+                    {!profiles.length && (
+                      <button
+                        className="button primary"
+                        onClick={() => setShowCreate(true)}
+                      >
+                        Create profile
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  visibleProfiles.map((profile) => {
+                    const checked = selected.includes(profile.id);
+                    return (
+                      <article
+                        className={
+                          checked ? "profile-row selected" : "profile-row"
+                        }
+                        key={profile.id}
+                      >
+                        <label className="check-wrap">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelected(profile.id)}
+                          />
+                          <span />
+                        </label>
+
+                        <div className="profile-cell">
+                          <div className="avatar">{initials(profile.name)}</div>
+                          <div>
+                            <strong>{profile.name}</strong>
+                            <span>{profile.email || "No account label"}</span>
+                          </div>
+                        </div>
+
+                        <div className="services">
+                          {profile.services.length ? (
+                            profile.services.map((service) => (
+                              <span className="service-badge" key={service}>
+                                {service}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </div>
+
+                        <div
+                          className={`proxy-pill ${profileProxyClass(profile)}`}
+                          title={
+                            profile.activeProxy?.endpoint ||
+                            (proxyPool.enabled
+                              ? "A proxy will be allocated when this profile opens."
+                              : "System Proxy Pool is disabled.")
+                          }
+                        >
+                          <i />
+                          {profileProxyLabel(profile)}
+                        </div>
+
+                        <span>{profile.groupName || "—"}</span>
+
+                        <span
+                          className={
+                            profile.isRunning
+                              ? "run-status running"
+                              : "run-status"
+                          }
+                        >
+                          <i />
+                          {profile.isRunning ? "Running" : "Stopped"}
+                        </span>
+
+                        <span className="muted">
+                          {relativeTime(profile.lastOpenedAt)}
+                        </span>
+
+                        <div className="row-actions">
+                          {profile.isRunning ? (
+                            <button
+                              className="mini-button danger"
+                              disabled={busy}
+                              onClick={() =>
+                                perform(
+                                  () => closeProfile(profile.id),
+                                  "Chrome profile closed and proxy slot released.",
+                                )
+                              }
+                            >
+                              Stop
+                            </button>
+                          ) : (
+                            <button
+                              className="mini-button"
+                              disabled={busy}
+                              onClick={() =>
+                                perform(
+                                  () => openProfiles([profile.id]),
+                                  proxyPool.enabled
+                                    ? "Chrome profile opened with an allocated proxy."
+                                    : "Chrome profile opened.",
+                                )
+                              }
+                            >
+                              Open
+                            </button>
+                          )}
+                          <button
+                            className="dots-button"
+                            title="Remove manager entry"
+                            onClick={() =>
+                              perform(
+                                () => deleteProfile(profile.id),
+                                "Profile entry removed. Session data was kept on disk.",
+                              )
+                            }
+                          >
+                            ⋯
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
                 )}
               </div>
-            ) : (
-              visibleProfiles.map((profile) => {
-                const checked = selected.includes(profile.id);
-                return (
-                  <article
-                    className={checked ? "profile-row selected" : "profile-row"}
-                    key={profile.id}
-                  >
-                    <label className="check-wrap">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleSelected(profile.id)}
-                      />
-                      <span />
-                    </label>
+            </section>
 
-                    <div className="profile-cell">
-                      <div className="avatar">{initials(profile.name)}</div>
-                      <div>
-                        <strong>{profile.name}</strong>
-                        <span>{profile.email || "No account label"}</span>
-                      </div>
-                    </div>
+            <footer className="data-path">
+              Session data stays on this PC ·{" "}
+              {system?.dataDir ?? "Loading data path…"}
+            </footer>
+          </>
+        ) : (
+          <>
+            <header className="topbar">
+              <div>
+                <span className="eyebrow">SYSTEM NETWORK ROUTING</span>
+                <h1>Proxies</h1>
+                <p>
+                  One rotating proxy slot is reserved for each newly opened Chrome
+                  profile.
+                </p>
+              </div>
+              <button
+                className="button primary"
+                onClick={() => {
+                  setEditingProxy(null);
+                  setShowProxyForm(true);
+                }}
+              >
+                <span className="plus">＋</span> Add proxy
+              </button>
+            </header>
 
-                    <div className="services">
-                      {profile.services.length ? (
-                        profile.services.map((service) => (
-                          <span className="service-badge" key={service}>
-                            {service}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </div>
-
-                    <button
-                      className={`proxy-pill proxy-${profile.proxy.enabled ? profile.proxy.health : "disabled"}`}
-                      onClick={() => setProxyProfileId(profile.id)}
-                      title={
-                        profile.proxy.enabled
-                          ? `${profile.proxy.protocol}://${profile.proxy.host}:${profile.proxy.port}`
-                          : "Proxy is disabled"
-                      }
-                    >
-                      <i />
-                      {proxyLabel(profile)}
-                    </button>
-
-                    <span>{profile.groupName || "—"}</span>
-
-                    <span className={profile.isRunning ? "run-status running" : "run-status"}>
-                      <i />
-                      {profile.isRunning ? "Running" : "Stopped"}
-                    </span>
-
-                    <span className="muted">{relativeTime(profile.lastOpenedAt)}</span>
-
-                    <div className="row-actions">
-                      {profile.isRunning ? (
-                        <button
-                          className="mini-button danger"
-                          disabled={busy}
-                          onClick={() =>
-                            perform(() => closeProfile(profile.id), "Chrome profile closed.")
-                          }
-                        >
-                          Stop
-                        </button>
-                      ) : (
-                        <button
-                          className="mini-button"
-                          disabled={busy}
-                          onClick={() =>
-                            perform(() => openProfiles([profile.id]), "Chrome profile opened.")
-                          }
-                        >
-                          Open
-                        </button>
-                      )}
-                      <button
-                        className="dots-button"
-                        title="Remove manager entry"
-                        onClick={() =>
-                          perform(
-                            () => deleteProfile(profile.id),
-                            "Profile entry removed. Session data was kept on disk.",
-                          )
-                        }
-                      >
-                        ⋯
-                      </button>
-                    </div>
-                  </article>
-                );
-              })
+            {banner && (
+              <div className={`banner ${banner.kind}`}>{banner.text}</div>
             )}
-          </div>
-        </section>
 
-        <footer className="data-path">
-          Session data stays on this PC · {system?.dataDir ?? "Loading data path…"}
-        </footer>
+            <section className="proxy-master-card">
+              <div>
+                <span className="eyebrow">GLOBAL PROXY POOL</span>
+                <h3>{proxyPool.enabled ? "Enabled" : "Disabled"}</h3>
+                <p>
+                  {proxyPool.enabled
+                    ? "Opening 4 new profiles prepares 4 separate proxy slots, rotates each configured endpoint, checks them, then launches one profile through each proxy."
+                    : "New Chrome profiles use the machine's direct connection. Existing running sessions are not changed."}
+                </p>
+              </div>
+              <label className="master-toggle">
+                <input
+                  type="checkbox"
+                  checked={proxyPool.enabled}
+                  disabled={busy}
+                  onChange={(event) => void toggleProxyPool(event.target.checked)}
+                />
+                <span />
+              </label>
+            </section>
+
+            <section className="stats-grid proxy-stats">
+              <div className="stat-card">
+                <span>Total proxy slots</span>
+                <strong>{proxyPool.items.length}</strong>
+                <small>Configured endpoints</small>
+              </div>
+              <div className="stat-card">
+                <span>Enabled</span>
+                <strong>{enabledProxyCount}</strong>
+                <small>Eligible for allocation</small>
+              </div>
+              <div className="stat-card">
+                <span>Healthy</span>
+                <strong>{healthyProxyCount}</strong>
+                <small>Passed latest preflight</small>
+              </div>
+              <div className="stat-card">
+                <span>In use</span>
+                <strong>{inUseProxyIds.size}</strong>
+                <small>Reserved by running profiles</small>
+              </div>
+            </section>
+
+            <section className="panel proxy-pool-panel">
+              <div className="proxy-pool-head">
+                <div>
+                  <strong>Rotating Proxy Pool</strong>
+                  <span>
+                    Add at least 4 enabled proxies if you normally open 4 profiles
+                    together.
+                  </span>
+                </div>
+                <span className={proxyPool.enabled ? "pool-badge on" : "pool-badge"}>
+                  {proxyPool.enabled ? "SYSTEM ON" : "SYSTEM OFF"}
+                </span>
+              </div>
+
+              <div className="proxy-table-head">
+                <span>Proxy</span>
+                <span>Endpoint</span>
+                <span>Health</span>
+                <span>Last IP</span>
+                <span>Latency</span>
+                <span>Rotation</span>
+                <span />
+              </div>
+
+              <div className="proxy-list">
+                {proxyPool.items.length === 0 ? (
+                  <div className="empty-state proxy-empty">
+                    <div className="empty-icon">⇄</div>
+                    <h3>Add your first rotating proxy</h3>
+                    <p>
+                      For a 4-profile batch, configure at least 4 enabled proxy slots.
+                      Each slot is reserved for only one running profile.
+                    </p>
+                    <button
+                      className="button primary"
+                      onClick={() => {
+                        setEditingProxy(null);
+                        setShowProxyForm(true);
+                      }}
+                    >
+                      Add proxy
+                    </button>
+                  </div>
+                ) : (
+                  proxyPool.items.map((item) => {
+                    const inUse = inUseProxyIds.has(item.id);
+                    return (
+                      <article className="proxy-row" key={item.id}>
+                        <div className="proxy-name-cell">
+                          <span
+                            className={
+                              item.enabled
+                                ? "proxy-enable-dot enabled"
+                                : "proxy-enable-dot"
+                            }
+                          />
+                          <div>
+                            <strong>{item.name}</strong>
+                            <span>{inUse ? "In use" : item.enabled ? "Available" : "Disabled"}</span>
+                          </div>
+                        </div>
+
+                        <code>
+                          {item.protocol}://{item.host}:{item.port}
+                        </code>
+
+                        <span className={`pool-health health-${item.health}`}>
+                          <i />
+                          {item.health}
+                        </span>
+
+                        <span className="proxy-ip">{item.lastIp || "—"}</span>
+
+                        <span className="muted">
+                          {item.lastLatencyMs != null
+                            ? `${item.lastLatencyMs} ms`
+                            : "—"}
+                        </span>
+
+                        <span className="rotation-status">
+                          {item.rotationUrl ? "Auto on allocation" : "Endpoint only"}
+                        </span>
+
+                        <div className="proxy-row-actions">
+                          <button
+                            className="mini-button"
+                            disabled={busy || !item.enabled}
+                            onClick={() =>
+                              perform(
+                                () => testProxyPoolItem(item.id),
+                                `${item.name} proxy test completed.`,
+                              )
+                            }
+                          >
+                            Test
+                          </button>
+                          <button
+                            className="mini-button"
+                            disabled={busy || inUse || !item.rotationUrl || !item.enabled}
+                            onClick={() =>
+                              perform(
+                                () => rotateProxyPoolItem(item.id),
+                                `${item.name} rotated and checked.`,
+                              )
+                            }
+                          >
+                            Rotate
+                          </button>
+                          <button
+                            className="dots-button"
+                            title="Edit proxy"
+                            disabled={busy || inUse}
+                            onClick={() => {
+                              setEditingProxy(item);
+                              setShowProxyForm(true);
+                            }}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            className="dots-button proxy-delete-button"
+                            title="Delete proxy"
+                            disabled={busy || inUse}
+                            onClick={() =>
+                              perform(
+                                () => deleteProxyPoolItem(item.id),
+                                `${item.name} removed from Proxy Pool.`,
+                              )
+                            }
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          </>
+        )}
       </main>
 
       {showCreate && (
@@ -951,11 +1165,14 @@ function App() {
         />
       )}
 
-      {proxyProfile && (
-        <ProxyModal
-          profile={proxyProfile}
-          onClose={() => setProxyProfileId(null)}
-          onChanged={refresh}
+      {showProxyForm && (
+        <ProxyForm
+          initial={editingProxy ?? undefined}
+          onClose={() => {
+            setShowProxyForm(false);
+            setEditingProxy(null);
+          }}
+          onSaved={refresh}
         />
       )}
     </div>

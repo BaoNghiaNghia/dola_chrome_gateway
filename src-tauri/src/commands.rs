@@ -1,8 +1,8 @@
 use crate::chrome;
 use crate::db;
 use crate::models::{
-    BrowserProfile, CreateProfileRequest, CreateWorkspaceRequest, ProxyCheckResult, ProxySettings,
-    ProxySettingsRequest, SystemInfo, Workspace,
+    BrowserProfile, CreateProfileRequest, CreateWorkspaceRequest, ProxyCheckResult, ProxyPoolItem,
+    ProxyPoolItemRequest, ProxyPoolState, ProxySettings, ProxySettingsRequest, SystemInfo, Workspace,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -28,6 +28,9 @@ fn sync_processes_for_profiles(
         .collect::<Vec<_>>();
 
     let discovered = chrome::discover_profile_pids(&profile_paths)?;
+    let running_ids = discovered.keys().cloned().collect::<Vec<_>>();
+    db::release_stale_proxy_assignments(&state.db_path, &running_ids)?;
+
     let mut processes = state
         .processes
         .lock()
@@ -67,12 +70,13 @@ fn decorate_running_state(
         } else {
             profile.is_running = false;
             profile.pid = None;
+            profile.active_proxy = None;
         }
     }
     Ok(())
 }
 
-fn check_and_record_proxy(
+fn check_and_record_profile_proxy(
     profile_id: &str,
     settings: &ProxySettings,
     state: &AppState,
@@ -93,6 +97,79 @@ fn check_and_record_proxy(
     }
 }
 
+fn pool_item_settings(item: &ProxyPoolItem) -> ProxySettings {
+    ProxySettings {
+        enabled: true,
+        protocol: item.protocol.clone(),
+        host: item.host.clone(),
+        port: item.port,
+        auth_username: item.auth_username.clone(),
+        rotation_mode: "sticky".into(),
+        rotation_url: item.rotation_url.clone(),
+        last_ip: item.last_ip.clone(),
+        health: item.health.clone(),
+        last_latency_ms: item.last_latency_ms,
+        last_checked_at: item.last_checked_at.clone(),
+    }
+}
+
+fn validate_pool_request(request: &ProxyPoolItemRequest) -> Result<(), String> {
+    let settings = ProxySettings {
+        enabled: request.enabled,
+        protocol: request.protocol.clone(),
+        host: request.host.clone(),
+        port: request.port,
+        auth_username: request.auth_username.clone(),
+        rotation_mode: "sticky".into(),
+        rotation_url: request.rotation_url.clone(),
+        ..ProxySettings::default()
+    };
+    proxy::validate(&settings)
+}
+
+fn check_and_record_pool_proxy(
+    item: &ProxyPoolItem,
+    state: &AppState,
+) -> Result<ProxyCheckResult, String> {
+    let settings = pool_item_settings(item);
+    match proxy::check(&settings) {
+        Ok(result) => {
+            db::record_pool_proxy_check(&state.db_path, &item.id, &result)?;
+            Ok(result)
+        }
+        Err(error) => {
+            let _ = db::record_pool_proxy_failure(
+                &state.db_path,
+                &item.id,
+                &Utc::now().to_rfc3339(),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn prepare_pool_proxy(
+    item: &ProxyPoolItem,
+    state: &AppState,
+) -> Result<(ProxySettings, ProxyCheckResult), String> {
+    let settings = pool_item_settings(item);
+    proxy::validate(&settings)?;
+
+    // A rotation URL means this proxy slot can request a fresh exit IP.
+    // Rotation happens once immediately before the browser batch is launched.
+    if item
+        .rotation_url
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|url| !url.is_empty())
+    {
+        proxy::rotate(&settings)?;
+    }
+
+    let result = check_and_record_pool_proxy(item, state)?;
+    Ok((settings, result))
+}
+
 #[tauri::command]
 pub fn list_profiles(state: State<'_, AppState>) -> Result<Vec<BrowserProfile>, String> {
     let mut profiles = db::list_profiles(&state.db_path)?;
@@ -105,6 +182,8 @@ pub fn create_profile(
     request: CreateProfileRequest,
     state: State<'_, AppState>,
 ) -> Result<BrowserProfile, String> {
+    // Per-profile proxy settings are retained for backward compatibility,
+    // but the system proxy pool controls launch routing when configured.
     if let Some(settings) = request.proxy.as_ref() {
         let materialized = ProxySettings {
             enabled: settings.enabled,
@@ -127,9 +206,11 @@ pub fn delete_profile(profile_id: String, state: State<'_, AppState>) -> Result<
     if is_profile_running(&profile_id, &state)? {
         return Err("Close this Chrome profile before removing it.".into());
     }
+    db::release_profile_proxy_assignment(&state.db_path, &profile_id)?;
     db::delete_profile(&state.db_path, &profile_id)
 }
 
+// Legacy per-profile proxy commands remain callable so existing databases/UI versions do not break.
 #[tauri::command]
 pub fn update_profile_proxy(
     profile_id: String,
@@ -138,8 +219,7 @@ pub fn update_profile_proxy(
 ) -> Result<ProxySettings, String> {
     if is_profile_running(&profile_id, &state)? {
         return Err(
-            "Close this Chrome profile before changing proxy settings. The proxy stays sticky while Chrome is running."
-                .into(),
+            "Close this Chrome profile before changing proxy settings.".into(),
         );
     }
 
@@ -163,7 +243,7 @@ pub fn test_profile_proxy(
     state: State<'_, AppState>,
 ) -> Result<ProxyCheckResult, String> {
     let settings = db::get_proxy_settings(&state.db_path, &profile_id)?;
-    check_and_record_proxy(&profile_id, &settings, &state)
+    check_and_record_profile_proxy(&profile_id, &settings, &state)
 }
 
 #[tauri::command]
@@ -172,10 +252,7 @@ pub fn rotate_profile_proxy(
     state: State<'_, AppState>,
 ) -> Result<ProxyCheckResult, String> {
     if is_profile_running(&profile_id, &state)? {
-        return Err(
-            "Close this Chrome profile before rotating its proxy. Rotation is intentionally blocked during an active browser session."
-                .into(),
-        );
+        return Err("Close this Chrome profile before rotating its proxy.".into());
     }
 
     let settings = db::get_proxy_settings(&state.db_path, &profile_id)?;
@@ -184,31 +261,88 @@ pub fn rotate_profile_proxy(
     }
 
     proxy::rotate(&settings)?;
-    check_and_record_proxy(&profile_id, &settings, &state)
+    check_and_record_profile_proxy(&profile_id, &settings, &state)
 }
 
-fn prepare_proxy_for_launch(
-    profile_id: &str,
-    settings: &ProxySettings,
-    state: &AppState,
+#[tauri::command]
+pub fn get_proxy_pool_state(state: State<'_, AppState>) -> Result<ProxyPoolState, String> {
+    refresh_processes(&state)?;
+    Ok(ProxyPoolState {
+        enabled: db::get_global_proxy_enabled(&state.db_path)?,
+        items: db::list_proxy_pool(&state.db_path)?,
+    })
+}
+
+#[tauri::command]
+pub fn set_proxy_pool_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<ProxyPoolState, String> {
+    db::set_global_proxy_enabled(&state.db_path, enabled)?;
+    Ok(ProxyPoolState {
+        enabled,
+        items: db::list_proxy_pool(&state.db_path)?,
+    })
+}
+
+#[tauri::command]
+pub fn create_proxy_pool_item(
+    request: ProxyPoolItemRequest,
+    state: State<'_, AppState>,
+) -> Result<ProxyPoolItem, String> {
+    validate_pool_request(&request)?;
+    db::create_proxy_pool_item(&state.db_path, request)
+}
+
+#[tauri::command]
+pub fn update_proxy_pool_item(
+    proxy_id: String,
+    request: ProxyPoolItemRequest,
+    state: State<'_, AppState>,
+) -> Result<ProxyPoolItem, String> {
+    refresh_processes(&state)?;
+    if db::is_pool_proxy_assigned(&state.db_path, &proxy_id)? {
+        return Err("This proxy is in use by a running profile. Close it before editing.".into());
+    }
+
+    validate_pool_request(&request)?;
+    db::update_proxy_pool_item(&state.db_path, &proxy_id, request)
+}
+
+#[tauri::command]
+pub fn delete_proxy_pool_item(
+    proxy_id: String,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if !settings.enabled {
-        return Ok(());
+    refresh_processes(&state)?;
+    db::delete_proxy_pool_item(&state.db_path, &proxy_id)
+}
+
+#[tauri::command]
+pub fn test_proxy_pool_item(
+    proxy_id: String,
+    state: State<'_, AppState>,
+) -> Result<ProxyCheckResult, String> {
+    let item = db::get_proxy_pool_item(&state.db_path, &proxy_id)?
+        .ok_or_else(|| "Proxy does not exist.".to_string())?;
+    check_and_record_pool_proxy(&item, &state)
+}
+
+#[tauri::command]
+pub fn rotate_proxy_pool_item(
+    proxy_id: String,
+    state: State<'_, AppState>,
+) -> Result<ProxyCheckResult, String> {
+    refresh_processes(&state)?;
+    if db::is_pool_proxy_assigned(&state.db_path, &proxy_id)? {
+        return Err("This proxy is currently assigned to a running profile.".into());
     }
 
-    proxy::validate(settings)?;
-
-    if settings.rotation_mode == "rotate_on_launch" {
-        proxy::rotate(settings).map_err(|error| {
-            format!("Proxy rotation failed for profile {profile_id}; Chrome was not opened: {error}")
-        })?;
-    }
-
-    check_and_record_proxy(profile_id, settings, state).map_err(|error| {
-        format!("Proxy preflight failed for profile {profile_id}; Chrome was not opened: {error}")
-    })?;
-
-    Ok(())
+    let item = db::get_proxy_pool_item(&state.db_path, &proxy_id)?
+        .ok_or_else(|| "Proxy does not exist.".to_string())?;
+    let settings = pool_item_settings(&item);
+    proxy::rotate(&settings)?;
+    check_and_record_pool_proxy(&item, &state)
 }
 
 fn open_profile_ids(
@@ -231,60 +365,120 @@ fn open_profile_ids(
     }
 
     refresh_processes(state)?;
-    let current_running = state
-        .processes
-        .lock()
-        .map_err(|_| "Process state is unavailable.".to_string())?
-        .len();
 
-    let already_running = {
+    let running_ids = {
         let processes = state
             .processes
             .lock()
             .map_err(|_| "Process state is unavailable.".to_string())?;
-        profile_ids
-            .iter()
-            .filter(|id| processes.contains_key(*id))
-            .count()
+        processes.keys().cloned().collect::<HashSet<_>>()
     };
-    let new_count = profile_ids.len().saturating_sub(already_running);
 
-    if current_running + new_count > MAX_SIMULTANEOUS_PROFILES {
+    let current_running = running_ids.len();
+    let new_profile_ids = profile_ids
+        .iter()
+        .filter(|id| !running_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if current_running + new_profile_ids.len() > MAX_SIMULTANEOUS_PROFILES {
         return Err(format!(
             "Only {MAX_SIMULTANEOUS_PROFILES} Chrome profiles can run at the same time."
         ));
     }
 
-    let mut opened = Vec::new();
-    for profile_id in profile_ids {
-        let already_running = state
-            .processes
-            .lock()
-            .map_err(|_| "Process state is unavailable.".to_string())?
-            .contains_key(&profile_id);
+    // Resolve every requested profile before rotating any proxy.
+    let mut profiles_to_open = Vec::with_capacity(new_profile_ids.len());
+    for profile_id in &new_profile_ids {
+        let profile = db::get_profile(&state.db_path, profile_id)?
+            .ok_or_else(|| format!("Profile {profile_id} does not exist."))?;
+        profiles_to_open.push(profile);
+    }
 
-        if already_running {
-            opened.push(profile_id);
-            continue;
+    let pool_enabled = db::get_global_proxy_enabled(&state.db_path)?;
+    let mut prepared_proxies: Vec<(ProxyPoolItem, ProxySettings, ProxyCheckResult)> = Vec::new();
+
+    if pool_enabled && !profiles_to_open.is_empty() {
+        let candidates = db::list_available_pool_proxies(&state.db_path, 1000)?;
+        if candidates.len() < profiles_to_open.len() {
+            return Err(format!(
+                "Proxy Pool is ON, but only {} unused proxy slot(s) are available for {} new profile(s). Add or enable more proxies first.",
+                candidates.len(),
+                profiles_to_open.len()
+            ));
         }
 
-        let profile = db::get_profile(&state.db_path, &profile_id)?
-            .ok_or_else(|| format!("Profile {profile_id} does not exist."))?;
+        let mut failures = Vec::new();
+        for item in candidates {
+            match prepare_pool_proxy(&item, state) {
+                Ok((settings, check)) => {
+                    prepared_proxies.push((item, settings, check));
+                    if prepared_proxies.len() == profiles_to_open.len() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    failures.push(format!("{}: {}", item.name, error));
+                }
+            }
+        }
 
-        prepare_proxy_for_launch(&profile_id, &profile.proxy, state)?;
+        if prepared_proxies.len() < profiles_to_open.len() {
+            let detail = if failures.is_empty() {
+                String::new()
+            } else {
+                format!(" Failed: {}", failures.join(" | "))
+            };
+            return Err(format!(
+                "Proxy Pool could not prepare {} healthy proxy slot(s) for this batch.{}",
+                profiles_to_open.len(),
+                detail
+            ));
+        }
+    }
 
-        let pid = chrome::launch(
+    let direct = ProxySettings::default();
+    let mut opened = profile_ids
+        .iter()
+        .filter(|id| running_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for (index, profile) in profiles_to_open.iter().enumerate() {
+        let effective_proxy = if pool_enabled {
+            let (item, settings, check) = &prepared_proxies[index];
+            db::assign_pool_proxy(
+                &state.db_path,
+                &profile.id,
+                &item.id,
+                check.public_ip.as_deref(),
+            )?;
+            settings
+        } else {
+            &direct
+        };
+
+        match chrome::launch(
             Path::new(&profile.profile_path),
             start_url.as_deref(),
-            &profile.proxy,
-        )?;
-        state
-            .processes
-            .lock()
-            .map_err(|_| "Process state is unavailable.".to_string())?
-            .insert(profile_id.clone(), pid);
-        db::touch_last_opened(&state.db_path, &profile_id)?;
-        opened.push(profile_id);
+            effective_proxy,
+        ) {
+            Ok(pid) => {
+                state
+                    .processes
+                    .lock()
+                    .map_err(|_| "Process state is unavailable.".to_string())?
+                    .insert(profile.id.clone(), pid);
+                db::touch_last_opened(&state.db_path, &profile.id)?;
+                opened.push(profile.id.clone());
+            }
+            Err(error) => {
+                if pool_enabled {
+                    let _ = db::release_profile_proxy_assignment(&state.db_path, &profile.id);
+                }
+                return Err(format!("Could not open profile {}: {error}", profile.name));
+            }
+        }
     }
 
     Ok(opened)
@@ -319,6 +513,7 @@ pub fn close_profile(profile_id: String, state: State<'_, AppState>) -> Result<(
         .lock()
         .map_err(|_| "Process state is unavailable.".to_string())?
         .remove(&profile_id);
+    db::release_profile_proxy_assignment(&state.db_path, &profile_id)?;
 
     Ok(())
 }

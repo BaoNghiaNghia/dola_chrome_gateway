@@ -2,6 +2,28 @@
 
 Windows desktop manager for isolated, persistent Chrome profiles.
 
+## Quick start on Windows
+
+The easiest way to run the project is to double-click:
+
+```text
+START.bat
+```
+
+The launcher automatically:
+
+- opens from the correct project directory,
+- adds Rust/Cargo to PATH,
+- installs npm dependencies on the first run if needed,
+- starts the Tauri desktop app.
+
+From Command Prompt, the short equivalent is:
+
+```cmd
+npm start
+```
+
+
 ## MVP
 
 - Create local Chrome profiles backed by one dedicated `--user-data-dir` each.

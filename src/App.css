@@ -1095,3 +1095,333 @@ button:disabled {
   display: flex;
   gap: 7px;
 }
+
+
+/* System Proxy Pool */
+.proxy-master-card {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border: 1px solid #dedcf3;
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 85% 20%, rgba(99, 88, 232, 0.1), transparent 24rem),
+    rgba(255, 255, 255, 0.94);
+  box-shadow: 0 7px 28px rgba(38, 48, 74, 0.035);
+}
+
+.proxy-master-card h3 {
+  margin: 5px 0 5px;
+  color: #242a3a;
+  font-size: 20px;
+}
+
+.proxy-master-card p {
+  max-width: 760px;
+  margin: 0;
+  color: #7f8798;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.master-toggle {
+  position: relative;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 30px;
+}
+
+.master-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.master-toggle span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: #d8dce5;
+  box-shadow: inset 0 0 0 1px #cfd4df;
+  transition: 0.18s ease;
+}
+
+.master-toggle span::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 2px 7px rgba(36, 43, 61, 0.18);
+  transition: 0.18s ease;
+}
+
+.master-toggle input:checked + span {
+  background: #6258e8;
+  box-shadow: 0 0 0 4px rgba(98, 88, 232, 0.1);
+}
+
+.master-toggle input:checked + span::after {
+  transform: translateX(24px);
+}
+
+.master-toggle input:disabled + span {
+  opacity: 0.55;
+}
+
+.proxy-stats {
+  margin-bottom: 18px;
+}
+
+.proxy-pool-panel {
+  overflow: visible;
+}
+
+.proxy-pool-head {
+  min-height: 66px;
+  padding: 14px 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.proxy-pool-head strong,
+.proxy-pool-head span {
+  display: block;
+}
+
+.proxy-pool-head strong {
+  color: #353c4e;
+  font-size: 12px;
+}
+
+.proxy-pool-head div > span {
+  margin-top: 4px;
+  color: #969eae;
+  font-size: 10px;
+}
+
+.pool-badge {
+  padding: 5px 9px;
+  border: 1px solid #e0e3e9;
+  border-radius: 999px;
+  color: #8b93a3;
+  background: #f8f9fb;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.pool-badge.on {
+  color: #277858;
+  border-color: #c8e6d8;
+  background: #effaf5;
+}
+
+.proxy-table-head,
+.proxy-row {
+  display: grid;
+  grid-template-columns:
+    minmax(145px, 1.15fr)
+    minmax(180px, 1.35fr)
+    100px
+    110px
+    82px
+    minmax(105px, 0.9fr)
+    250px;
+  gap: 12px;
+  align-items: center;
+}
+
+.proxy-table-head {
+  min-height: 38px;
+  padding: 0 16px;
+  color: #9ba2b1;
+  background: #fbfcfd;
+  border-bottom: 1px solid #edf0f4;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.proxy-row {
+  min-height: 68px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  color: #596173;
+  font-size: 10px;
+}
+
+.proxy-row:last-child {
+  border-bottom: 0;
+}
+
+.proxy-row:hover {
+  background: #fbfbff;
+}
+
+.proxy-name-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.proxy-name-cell > div {
+  min-width: 0;
+}
+
+.proxy-name-cell strong,
+.proxy-name-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxy-name-cell strong {
+  color: #343b4d;
+  font-size: 11px;
+}
+
+.proxy-name-cell span {
+  margin-top: 3px;
+  color: #949cab;
+  font-size: 9px;
+}
+
+.proxy-enable-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c6ccd5;
+}
+
+.proxy-enable-dot.enabled {
+  background: #5ac998;
+  box-shadow: 0 0 0 4px rgba(90, 201, 152, 0.1);
+}
+
+.proxy-row code {
+  overflow: hidden;
+  color: #5e6575;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pool-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  text-transform: capitalize;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.pool-health i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c5cbd5;
+}
+
+.pool-health.health-healthy {
+  color: #28795a !important;
+}
+
+.pool-health.health-healthy i {
+  background: #49c58e;
+}
+
+.pool-health.health-offline {
+  color: #a54455 !important;
+}
+
+.pool-health.health-offline i {
+  background: #e56b80;
+}
+
+.pool-health.health-unchecked {
+  color: #8a6a31 !important;
+}
+
+.pool-health.health-unchecked i {
+  background: #d7a64f;
+}
+
+.proxy-ip {
+  overflow: hidden;
+  color: #4d5668;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rotation-status {
+  color: #858d9d;
+  font-size: 9px;
+}
+
+.proxy-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.proxy-delete-button:hover {
+  color: #b44357;
+  border-color: #efc6cd;
+}
+
+.proxy-empty {
+  min-height: 320px;
+}
+
+.proxy-editor {
+  width: min(670px, 92vw);
+}
+
+.proxy-item-toggle {
+  margin: 0 0 16px !important;
+  padding: 11px 12px;
+  border: 1px solid #e6e3f4;
+  border-radius: 9px;
+  background: #faf9ff;
+}
+
+.proxy-form-grid {
+  grid-template-columns: 0.7fr 1.3fr 0.65fr 1fr;
+}
+
+.proxy-pill {
+  cursor: default;
+}
+
+@media (max-width: 1250px) {
+  .proxy-table-head,
+  .proxy-row {
+    grid-template-columns:
+      minmax(125px, 1fr)
+      minmax(155px, 1.2fr)
+      88px
+      95px
+      70px
+      95px
+      220px;
+    gap: 8px;
+  }
+}

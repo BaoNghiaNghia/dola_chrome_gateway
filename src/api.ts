@@ -3,8 +3,9 @@ import type {
   BrowserProfile,
   CreateProfileInput,
   ProxyCheckResult,
-  ProxySettings,
-  ProxySettingsInput,
+  ProxyPoolItem,
+  ProxyPoolItemInput,
+  ProxyPoolState,
   SystemInfo,
   Workspace,
 } from "./types";
@@ -37,21 +38,6 @@ export async function deleteProfile(profileId: string): Promise<void> {
   return invoke("delete_profile", { profileId });
 }
 
-export async function updateProfileProxy(
-  profileId: string,
-  request: ProxySettingsInput,
-): Promise<ProxySettings> {
-  return invoke<ProxySettings>("update_profile_proxy", { profileId, request });
-}
-
-export async function testProfileProxy(profileId: string): Promise<ProxyCheckResult> {
-  return invoke<ProxyCheckResult>("test_profile_proxy", { profileId });
-}
-
-export async function rotateProfileProxy(profileId: string): Promise<ProxyCheckResult> {
-  return invoke<ProxyCheckResult>("rotate_profile_proxy", { profileId });
-}
-
 export async function openProfiles(profileIds: string[]): Promise<string[]> {
   return invoke<string[]>("open_profiles", {
     profileIds,
@@ -61,6 +47,40 @@ export async function openProfiles(profileIds: string[]): Promise<string[]> {
 
 export async function closeProfile(profileId: string): Promise<void> {
   return invoke("close_profile", { profileId });
+}
+
+export async function getProxyPoolState(): Promise<ProxyPoolState> {
+  if (!isTauri()) return { enabled: false, items: [] };
+  return invoke<ProxyPoolState>("get_proxy_pool_state");
+}
+
+export async function setProxyPoolEnabled(enabled: boolean): Promise<ProxyPoolState> {
+  return invoke<ProxyPoolState>("set_proxy_pool_enabled", { enabled });
+}
+
+export async function createProxyPoolItem(
+  request: ProxyPoolItemInput,
+): Promise<ProxyPoolItem> {
+  return invoke<ProxyPoolItem>("create_proxy_pool_item", { request });
+}
+
+export async function updateProxyPoolItem(
+  proxyId: string,
+  request: ProxyPoolItemInput,
+): Promise<ProxyPoolItem> {
+  return invoke<ProxyPoolItem>("update_proxy_pool_item", { proxyId, request });
+}
+
+export async function deleteProxyPoolItem(proxyId: string): Promise<void> {
+  return invoke("delete_proxy_pool_item", { proxyId });
+}
+
+export async function testProxyPoolItem(proxyId: string): Promise<ProxyCheckResult> {
+  return invoke<ProxyCheckResult>("test_proxy_pool_item", { proxyId });
+}
+
+export async function rotateProxyPoolItem(proxyId: string): Promise<ProxyCheckResult> {
+  return invoke<ProxyCheckResult>("rotate_proxy_pool_item", { proxyId });
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {
