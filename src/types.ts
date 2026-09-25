@@ -133,6 +133,7 @@ export type SchedulerState = {
 
 export type GenerationJobStatus =
   | "queued"
+  | "assigned"
   | "starting"
   | "generating"
   | "recovering"
@@ -182,6 +183,26 @@ export type UpdateGenerationJobInput = Partial<
     | "lastPollAt"
   >
 >;
+
+export type LocalApiState = {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  baseUrl: string;
+  apiKeyPreview: string;
+};
+
+export type WorkerState = {
+  enabled: boolean;
+  running: boolean;
+  mode: string;
+  maxConcurrentJobs: number;
+  pollIntervalMs: number;
+  activeAssignments: number;
+  queuedJobs: number;
+  lastTickAt: string | null;
+  lastError: string | null;
+};
 
 export type Workspace = {
   id: string;

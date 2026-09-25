@@ -41,9 +41,34 @@ npm start
 - Profile close requests graceful Chrome shutdown first, then uses force-close only as a fallback.
 - Smart Scheduler with per-profile session health, scheduler enable/disable, cooldown, rate-limit, quota-block, credits, usage, and least-recently-used selection.
 - Scheduler-ready profiles can be launched automatically with `Open Smart`; blocked profiles are skipped.
-- Persistent Seedance generation queue stored in SQLite with queued/starting/generating/recovering/completed/failed/cancelled states.
+- Persistent Seedance generation queue stored in SQLite with queued/assigned/starting/generating/recovering/completed/failed/cancelled states.
 - Interrupted generation jobs in `starting` or `generating` automatically return as `recovering` after an app restart.
 - Queue UI supports Seedance model, duration, aspect ratio, persistent job creation, status inspection, and cancellation. The website execution adapter is intentionally a separate next phase.
+
+## Local API and allocation worker
+
+The Queue tab can start a local HTTP API bound only to `127.0.0.1`. All endpoints except `/health` require the gateway bearer key shown in the app.
+
+Available endpoints:
+
+```text
+GET  /health
+GET  /v1/videos
+POST /v1/videos/generations
+GET  /v1/videos/{job_id}
+POST /v1/videos/{job_id}/cancel
+```
+
+Example:
+
+```cmd
+curl -X POST http://127.0.0.1:8787/v1/videos/generations ^
+  -H "Authorization: Bearer YOUR_GATEWAY_KEY" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"prompt\":\"A handheld UGC video\",\"model\":\"seedance-2.5\",\"durationSeconds\":10,\"ratio\":\"1:1\"}"
+```
+
+The allocation worker is disabled by default. When enabled, it requires Smart Scheduler to be ON and assigns queued jobs to Ready profiles using least-recently-used ordering. Its current mode is `allocation_only`: it reserves a profile and changes the job to `assigned`; automatic Seedance website submission/polling is intentionally handled by the next execution-adapter layer.
 
 ## Stack
 

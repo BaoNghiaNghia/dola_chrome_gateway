@@ -1658,6 +1658,182 @@ button:disabled {
   color: #9a5d32;
 }
 
+/* Queue runtime controls */
+.runtime-grid {
+  margin-bottom: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.runtime-card {
+  padding: 16px;
+  border: 1px solid #dedfe8;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 7px 28px rgba(38, 48, 74, .035);
+}
+
+.runtime-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-card h3 {
+  margin: 4px 0 0;
+  color: #303748;
+  font-size: 14px;
+}
+
+.runtime-card > p {
+  margin: 7px 0 13px;
+  color: #8b93a3;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.runtime-card code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.runtime-chip {
+  padding: 5px 8px;
+  border: 1px solid #e0e3e9;
+  border-radius: 999px;
+  color: #8b93a3;
+  background: #f8f9fb;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .05em;
+}
+
+.runtime-chip.on {
+  color: #277858;
+  border-color: #c8e6d8;
+  background: #effaf5;
+}
+
+.runtime-row {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #f0f2f5;
+  color: #697285;
+  font-size: 9px;
+}
+
+.runtime-row > *:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-port-row > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.runtime-port-row input {
+  width: 84px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #dce0e8;
+  border-radius: 7px;
+  outline: 0;
+  color: #4e5668;
+  background: #fff;
+  font-size: 9px;
+}
+
+.runtime-metrics {
+  margin-bottom: 6px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.runtime-metrics > div {
+  padding: 8px;
+  border: 1px solid #ebeaf3;
+  border-radius: 8px;
+  background: #fafaff;
+  text-align: center;
+}
+
+.runtime-metrics span,
+.runtime-metrics strong {
+  display: block;
+}
+
+.runtime-metrics span {
+  color: #969dac;
+  font-size: 8px;
+}
+
+.runtime-metrics strong {
+  margin-top: 3px;
+  color: #42495b;
+  font-size: 14px;
+}
+
+.runtime-actions {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.runtime-actions .runtime-toggle {
+  margin-left: auto;
+}
+
+.runtime-toggle {
+  width: 48px;
+  height: 27px;
+}
+
+.runtime-toggle span::after {
+  width: 19px;
+  height: 19px;
+}
+
+.runtime-toggle input:checked + span::after {
+  transform: translateX(21px);
+}
+
+.runtime-mode {
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #6c63c7;
+  background: #f3f1ff;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.runtime-error {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid #efd2d8;
+  border-radius: 7px;
+  color: #a54455;
+  background: #fff5f6;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1180px) {
+  .runtime-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Generation Queue */
 .queue-nav-icon img {
   border-radius: 6px;
@@ -1877,6 +2053,12 @@ button:disabled {
 .job-status-queued {
   color: #6559c7;
   border-color: #d9d3f3;
+  background: #f6f3ff;
+}
+
+.job-status-assigned {
+  color: #6a57b8;
+  border-color: #d9d1f1;
   background: #f6f3ff;
 }
 

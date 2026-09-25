@@ -16,6 +16,23 @@ fn connection(db_path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalApiSettingsRecord {
+    pub enabled: bool,
+    pub port: u16,
+    pub api_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerSettingsRecord {
+    pub enabled: bool,
+    pub mode: String,
+    pub max_concurrent_jobs: usize,
+    pub poll_interval_ms: u64,
+    pub last_tick_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
 fn timestamp_is_future(value: Option<&str>) -> bool {
     value
         .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
@@ -24,9 +41,15 @@ fn timestamp_is_future(value: Option<&str>) -> bool {
 
 fn derive_availability(state: &mut ProfileOperationalState) {
     let (availability, reason) = if !state.scheduling_enabled {
-        ("disabled", Some("Scheduler is disabled for this profile.".to_string()))
+        (
+            "disabled",
+            Some("Scheduler is disabled for this profile.".to_string()),
+        )
     } else if state.session_status == "needs_login" {
-        ("needs_login", Some("Profile needs login before scheduling.".to_string()))
+        (
+            "needs_login",
+            Some("Profile needs login before scheduling.".to_string()),
+        )
     } else if timestamp_is_future(state.rate_limited_until.as_deref()) {
         (
             "rate_limited",
@@ -160,6 +183,29 @@ pub fn init(db_path: &Path) -> Result<(), String> {
 
         INSERT OR IGNORE INTO system_scheduler_settings (id, enabled) VALUES (1, 0);
 
+        CREATE TABLE IF NOT EXISTS system_api_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            port INTEGER NOT NULL DEFAULT 8787,
+            api_key TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS system_worker_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            mode TEXT NOT NULL DEFAULT 'allocation_only',
+            max_concurrent_jobs INTEGER NOT NULL DEFAULT 4,
+            poll_interval_ms INTEGER NOT NULL DEFAULT 1000,
+            last_tick_at TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT OR IGNORE INTO system_worker_settings
+            (id, enabled, mode, max_concurrent_jobs, poll_interval_ms, updated_at)
+        VALUES (1, 0, 'allocation_only', 4, 1000, CURRENT_TIMESTAMP);
+
         CREATE TABLE IF NOT EXISTS generation_jobs (
             id TEXT PRIMARY KEY,
             prompt TEXT NOT NULL,
@@ -242,6 +288,20 @@ pub fn init(db_path: &Path) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("Cannot initialize database: {e}"))?;
+
+    let api_key = format!(
+        "dola_{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    conn.execute(
+        "INSERT OR IGNORE INTO system_api_settings
+         (id, enabled, port, api_key, updated_at)
+         VALUES (1, 0, 8787, ?1, ?2)",
+        params![api_key, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| format!("Cannot initialize local API settings: {e}"))?;
+
     Ok(())
 }
 
@@ -389,7 +449,10 @@ pub fn list_proxy_pool(db_path: &Path) -> Result<Vec<ProxyPoolItem>, String> {
     Ok(items)
 }
 
-pub fn get_proxy_pool_item(db_path: &Path, proxy_id: &str) -> Result<Option<ProxyPoolItem>, String> {
+pub fn get_proxy_pool_item(
+    db_path: &Path,
+    proxy_id: &str,
+) -> Result<Option<ProxyPoolItem>, String> {
     let conn = connection(db_path)?;
     conn.query_row(
         "SELECT id, name, enabled, protocol, host, port, auth_username, rotation_url,
@@ -490,7 +553,8 @@ pub fn update_proxy_pool_item(
     if changed == 0 {
         return Err("Proxy does not exist.".into());
     }
-    get_proxy_pool_item(db_path, proxy_id)?.ok_or_else(|| "Updated proxy could not be loaded.".into())
+    get_proxy_pool_item(db_path, proxy_id)?
+        .ok_or_else(|| "Updated proxy could not be loaded.".into())
 }
 
 pub fn is_pool_proxy_assigned(db_path: &Path, proxy_id: &str) -> Result<bool, String> {
@@ -513,7 +577,9 @@ pub fn delete_proxy_pool_item(db_path: &Path, proxy_id: &str) -> Result<(), Stri
         )
         .map_err(|e| e.to_string())?;
     if assigned {
-        return Err("This proxy is assigned to a running profile. Close that profile first.".into());
+        return Err(
+            "This proxy is assigned to a running profile. Close that profile first.".into(),
+        );
     }
 
     conn.execute("DELETE FROM proxy_pool WHERE id = ?1", params![proxy_id])
@@ -537,7 +603,11 @@ pub fn record_pool_proxy_check(
          WHERE id = ?5",
         params![
             result.public_ip.as_deref(),
-            if result.reachable { "healthy" } else { "offline" },
+            if result.reachable {
+                "healthy"
+            } else {
+                "offline"
+            },
             result.latency_ms.map(|value| value as i64),
             result.checked_at.as_str(),
             proxy_id
@@ -604,9 +674,8 @@ pub fn release_stale_proxy_assignments(
         .take(running_profile_ids.len())
         .collect::<Vec<_>>()
         .join(",");
-    let sql = format!(
-        "DELETE FROM proxy_runtime_assignments WHERE profile_id NOT IN ({placeholders})"
-    );
+    let sql =
+        format!("DELETE FROM proxy_runtime_assignments WHERE profile_id NOT IN ({placeholders})");
     let values = running_profile_ids
         .iter()
         .map(|value| value as &dyn rusqlite::ToSql)
@@ -737,11 +806,20 @@ pub fn create_profile(
         params![
             &id,
             name,
-            request.email.as_deref().filter(|value| !value.trim().is_empty()),
-            request.group_name.as_deref().filter(|value| !value.trim().is_empty()),
+            request
+                .email
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
+            request
+                .group_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
             services_json,
             tags_json,
-            request.notes.as_deref().filter(|value| !value.trim().is_empty()),
+            request
+                .notes
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()),
             &profile_path,
             &now,
             &now
@@ -853,7 +931,11 @@ pub fn record_proxy_check(
          WHERE profile_id = ?5",
         params![
             result.public_ip.as_deref(),
-            if result.reachable { "healthy" } else { "offline" },
+            if result.reachable {
+                "healthy"
+            } else {
+                "offline"
+            },
             result.latency_ms.map(|value| value as i64),
             result.checked_at.as_str(),
             profile_id
@@ -913,7 +995,6 @@ pub fn delete_profile(db_path: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-
 pub fn get_scheduler_enabled(db_path: &Path) -> Result<bool, String> {
     let conn = connection(db_path)?;
     conn.query_row(
@@ -932,6 +1013,183 @@ pub fn set_scheduler_enabled(db_path: &Path, enabled: bool) -> Result<(), String
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn get_local_api_settings(db_path: &Path) -> Result<LocalApiSettingsRecord, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT enabled, port, api_key FROM system_api_settings WHERE id = 1",
+        [],
+        |row| {
+            Ok(LocalApiSettingsRecord {
+                enabled: row.get::<_, i64>(0)? != 0,
+                port: row.get::<_, i64>(1)?.clamp(1, u16::MAX as i64) as u16,
+                api_key: row.get(2)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn set_local_api_enabled(
+    db_path: &Path,
+    enabled: bool,
+) -> Result<LocalApiSettingsRecord, String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_api_settings SET enabled = ?1, updated_at = ?2 WHERE id = 1",
+        params![enabled as i64, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    get_local_api_settings(db_path)
+}
+
+pub fn set_local_api_port(db_path: &Path, port: u16) -> Result<LocalApiSettingsRecord, String> {
+    if port < 1024 {
+        return Err("Local API port must be between 1024 and 65535.".into());
+    }
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_api_settings SET port = ?1, updated_at = ?2 WHERE id = 1",
+        params![port as i64, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    get_local_api_settings(db_path)
+}
+
+pub fn rotate_local_api_key(db_path: &Path) -> Result<String, String> {
+    let api_key = format!(
+        "dola_{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_api_settings SET api_key = ?1, updated_at = ?2 WHERE id = 1",
+        params![&api_key, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(api_key)
+}
+
+pub fn get_worker_settings(db_path: &Path) -> Result<WorkerSettingsRecord, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT enabled, mode, max_concurrent_jobs, poll_interval_ms, last_tick_at, last_error
+         FROM system_worker_settings WHERE id = 1",
+        [],
+        |row| {
+            Ok(WorkerSettingsRecord {
+                enabled: row.get::<_, i64>(0)? != 0,
+                mode: row.get(1)?,
+                max_concurrent_jobs: row.get::<_, i64>(2)?.clamp(1, 4) as usize,
+                poll_interval_ms: row.get::<_, i64>(3)?.clamp(250, 60_000) as u64,
+                last_tick_at: row.get(4)?,
+                last_error: row.get(5)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn set_worker_enabled(db_path: &Path, enabled: bool) -> Result<WorkerSettingsRecord, String> {
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_worker_settings
+         SET enabled = ?1, last_error = NULL, updated_at = ?2
+         WHERE id = 1",
+        params![enabled as i64, Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    get_worker_settings(db_path)
+}
+
+pub fn record_worker_tick(db_path: &Path, error: Option<&str>) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let conn = connection(db_path)?;
+    conn.execute(
+        "UPDATE system_worker_settings
+         SET last_tick_at = ?1, last_error = ?2, updated_at = ?1
+         WHERE id = 1",
+        params![&now, error],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn count_active_job_assignments(db_path: &Path) -> Result<usize, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM generation_jobs
+         WHERE status IN ('assigned', 'starting', 'generating', 'recovering')",
+        [],
+        |row| Ok(row.get::<_, i64>(0)?.max(0) as usize),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn count_queued_jobs(db_path: &Path) -> Result<usize, String> {
+    let conn = connection(db_path)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM generation_jobs WHERE status = 'queued'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)?.max(0) as usize),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn list_active_job_profile_ids(db_path: &Path) -> Result<Vec<String>, String> {
+    let conn = connection(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT profile_id FROM generation_jobs
+             WHERE profile_id IS NOT NULL
+               AND status IN ('assigned', 'starting', 'generating', 'recovering')",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+pub fn list_queued_generation_jobs(
+    db_path: &Path,
+    limit: usize,
+) -> Result<Vec<GenerationJob>, String> {
+    let conn = connection(db_path)?;
+    let sql =
+        format!("{GENERATION_JOB_SELECT} WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?1");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let jobs = stmt
+        .query_map(params![limit.max(1) as i64], row_to_generation_job)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(jobs)
+}
+
+pub fn assign_generation_job(
+    db_path: &Path,
+    job_id: &str,
+    profile_id: &str,
+) -> Result<bool, String> {
+    let conn = connection(db_path)?;
+    let now = Utc::now().to_rfc3339();
+    let changed = conn
+        .execute(
+            "UPDATE generation_jobs
+             SET status = 'assigned', profile_id = ?1, updated_at = ?2
+             WHERE id = ?3 AND status = 'queued' AND profile_id IS NULL",
+            params![profile_id, &now, job_id],
+        )
+        .map_err(|e| format!("Cannot assign generation job: {e}"))?;
+    if changed > 0 {
+        touch_profile_used(db_path, profile_id)?;
+    }
+    Ok(changed > 0)
 }
 
 pub fn update_profile_operational_state(
@@ -1077,10 +1335,7 @@ pub fn list_generation_jobs(db_path: &Path) -> Result<Vec<GenerationJob>, String
     Ok(jobs)
 }
 
-pub fn get_generation_job(
-    db_path: &Path,
-    job_id: &str,
-) -> Result<Option<GenerationJob>, String> {
+pub fn get_generation_job(db_path: &Path, job_id: &str) -> Result<Option<GenerationJob>, String> {
     let conn = connection(db_path)?;
     let sql = format!("{GENERATION_JOB_SELECT} WHERE id = ?1");
     conn.query_row(&sql, params![job_id], row_to_generation_job)
@@ -1118,14 +1373,7 @@ pub fn create_generation_job(
         "INSERT INTO generation_jobs
          (id, prompt, model, duration_seconds, ratio, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?6)",
-        params![
-            &id,
-            prompt,
-            model,
-            duration_seconds as i64,
-            ratio,
-            &now
-        ],
+        params![&id, prompt, model, duration_seconds as i64, ratio, &now],
     )
     .map_err(|e| format!("Cannot create generation job: {e}"))?;
 
@@ -1147,8 +1395,10 @@ pub fn update_generation_job(
         .to_string();
     let now = Utc::now().to_rfc3339();
     let started_at = if current.started_at.is_none()
-        && matches!(next_status.as_str(), "starting" | "generating" | "recovering")
-    {
+        && matches!(
+            next_status.as_str(),
+            "starting" | "generating" | "recovering"
+        ) {
         Some(now.clone())
     } else {
         current.started_at.clone()
@@ -1177,13 +1427,19 @@ pub fn update_generation_job(
          WHERE id = ?13",
         params![
             &next_status,
-            request.profile_id.as_deref().or(current.profile_id.as_deref()),
+            request
+                .profile_id
+                .as_deref()
+                .or(current.profile_id.as_deref()),
             request.proxy_id.as_deref().or(current.proxy_id.as_deref()),
             request
                 .external_task_id
                 .as_deref()
                 .or(current.external_task_id.as_deref()),
-            request.result_url.as_deref().or(current.result_url.as_deref()),
+            request
+                .result_url
+                .as_deref()
+                .or(current.result_url.as_deref()),
             request
                 .failure_code
                 .as_deref()
@@ -1215,7 +1471,10 @@ pub fn update_generation_job(
 pub fn cancel_generation_job(db_path: &Path, job_id: &str) -> Result<GenerationJob, String> {
     let current = get_generation_job(db_path, job_id)?
         .ok_or_else(|| "Generation job does not exist.".to_string())?;
-    if matches!(current.status.as_str(), "completed" | "failed" | "cancelled") {
+    if matches!(
+        current.status.as_str(),
+        "completed" | "failed" | "cancelled"
+    ) {
         return Ok(current);
     }
 

@@ -246,6 +246,30 @@ pub struct UpdateGenerationJobRequest {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalApiState {
+    pub enabled: bool,
+    pub running: bool,
+    pub port: u16,
+    pub base_url: String,
+    pub api_key_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerState {
+    pub enabled: bool,
+    pub running: bool,
+    pub mode: String,
+    pub max_concurrent_jobs: usize,
+    pub poll_interval_ms: u64,
+    pub active_assignments: usize,
+    pub queued_jobs: usize,
+    pub last_tick_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Workspace {
     pub id: String,
     pub name: String,

@@ -1,9 +1,11 @@
+mod api_server;
 mod chrome;
 mod commands;
 mod db;
 mod models;
 mod proxy;
 mod state;
+mod worker;
 
 use state::AppState;
 use tauri::Manager;
@@ -12,19 +14,53 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| std::io::Error::other(format!(
-                    "Cannot resolve app data directory: {e}"
-                )))?;
+            let app_data_dir = app.path().app_data_dir().map_err(|e| {
+                std::io::Error::other(format!("Cannot resolve app data directory: {e}"))
+            })?;
             let profiles_dir = app_data_dir.join("profiles");
             std::fs::create_dir_all(&profiles_dir)?;
 
             let db_path = app_data_dir.join("profiles.sqlite3");
             db::init(&db_path).map_err(std::io::Error::other)?;
             db::mark_interrupted_jobs_recovering(&db_path).map_err(std::io::Error::other)?;
-            app.manage(AppState::new(db_path, profiles_dir));
+
+            let state = AppState::new(db_path.clone(), profiles_dir);
+
+            let api_settings =
+                db::get_local_api_settings(&db_path).map_err(std::io::Error::other)?;
+            if api_settings.enabled {
+                match api_server::start(db_path.clone(), api_settings.port) {
+                    Ok(runtime) => {
+                        *state
+                            .api_runtime
+                            .lock()
+                            .map_err(|_| std::io::Error::other("Local API state lock failed"))? =
+                            Some(runtime);
+                    }
+                    Err(_) => {
+                        let _ = db::set_local_api_enabled(&db_path, false);
+                    }
+                }
+            }
+
+            let worker_settings =
+                db::get_worker_settings(&db_path).map_err(std::io::Error::other)?;
+            if worker_settings.enabled {
+                match worker::start(db_path.clone()) {
+                    Ok(runtime) => {
+                        *state
+                            .worker_runtime
+                            .lock()
+                            .map_err(|_| std::io::Error::other("Worker state lock failed"))? =
+                            Some(runtime);
+                    }
+                    Err(_) => {
+                        let _ = db::set_worker_enabled(&db_path, false);
+                    }
+                }
+            }
+
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +79,14 @@ pub fn run() {
             commands::create_generation_job,
             commands::update_generation_job,
             commands::cancel_generation_job,
+            commands::get_local_api_state,
+            commands::set_local_api_enabled,
+            commands::set_local_api_port,
+            commands::reveal_local_api_key,
+            commands::rotate_local_api_key,
+            commands::get_worker_state,
+            commands::set_worker_enabled,
+            commands::run_worker_tick,
             commands::get_proxy_pool_state,
             commands::set_proxy_pool_enabled,
             commands::create_proxy_pool_item,

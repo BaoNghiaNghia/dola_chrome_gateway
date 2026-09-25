@@ -1,13 +1,16 @@
+use crate::api_server;
 use crate::chrome;
 use crate::db;
 use crate::models::{
     BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest, CreateWorkspaceRequest,
-    GenerationJob, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest,
-    ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState, SystemInfo,
-    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, Workspace,
+    GenerationJob, LocalApiState, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem,
+    ProxyPoolItemRequest, ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState,
+    SystemInfo, UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, WorkerState,
+    Workspace,
 };
 use crate::proxy;
 use crate::state::AppState;
+use crate::worker;
 use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -55,10 +58,7 @@ fn is_profile_running(profile_id: &str, state: &AppState) -> Result<bool, String
         .contains_key(profile_id))
 }
 
-fn decorate_running_state(
-    profiles: &mut [BrowserProfile],
-    state: &AppState,
-) -> Result<(), String> {
+fn decorate_running_state(profiles: &mut [BrowserProfile], state: &AppState) -> Result<(), String> {
     sync_processes_for_profiles(profiles, state)?;
     let processes = state
         .processes
@@ -89,11 +89,7 @@ fn check_and_record_profile_proxy(
             Ok(result)
         }
         Err(error) => {
-            let _ = db::record_proxy_failure(
-                &state.db_path,
-                profile_id,
-                &Utc::now().to_rfc3339(),
-            );
+            let _ = db::record_proxy_failure(&state.db_path, profile_id, &Utc::now().to_rfc3339());
             Err(error)
         }
     }
@@ -140,11 +136,8 @@ fn check_and_record_pool_proxy(
             Ok(result)
         }
         Err(error) => {
-            let _ = db::record_pool_proxy_failure(
-                &state.db_path,
-                &item.id,
-                &Utc::now().to_rfc3339(),
-            );
+            let _ =
+                db::record_pool_proxy_failure(&state.db_path, &item.id, &Utc::now().to_rfc3339());
             Err(error)
         }
     }
@@ -220,9 +213,7 @@ pub fn update_profile_proxy(
     state: State<'_, AppState>,
 ) -> Result<ProxySettings, String> {
     if is_profile_running(&profile_id, &state)? {
-        return Err(
-            "Close this Chrome profile before changing proxy settings.".into(),
-        );
+        return Err("Close this Chrome profile before changing proxy settings.".into());
     }
 
     let settings = ProxySettings {
@@ -292,6 +283,10 @@ pub fn set_scheduler_enabled(
     state: State<'_, AppState>,
 ) -> Result<SchedulerState, String> {
     db::set_scheduler_enabled(&state.db_path, enabled)?;
+    if !enabled {
+        let _ = db::set_worker_enabled(&state.db_path, false);
+        let _ = stop_worker_runtime(&state);
+    }
     get_scheduler_state(state)
 }
 
@@ -322,7 +317,9 @@ pub fn open_smart_profiles(
         return Err("Smart Scheduler is disabled.".into());
     }
 
-    let desired = count.unwrap_or(MAX_SIMULTANEOUS_PROFILES).clamp(1, MAX_SIMULTANEOUS_PROFILES);
+    let desired = count
+        .unwrap_or(MAX_SIMULTANEOUS_PROFILES)
+        .clamp(1, MAX_SIMULTANEOUS_PROFILES);
     let mut profiles = db::list_profiles(&state.db_path)?;
     decorate_running_state(&mut profiles, &state)?;
 
@@ -395,6 +392,197 @@ pub fn cancel_generation_job(
     db::cancel_generation_job(&state.db_path, &job_id)
 }
 
+fn api_key_preview(api_key: &str) -> String {
+    if api_key.len() <= 14 {
+        return api_key.to_string();
+    }
+    format!("{}…{}", &api_key[..9], &api_key[api_key.len() - 4..])
+}
+
+fn api_runtime_running(state: &AppState) -> Result<bool, String> {
+    let runtime = state
+        .api_runtime
+        .lock()
+        .map_err(|_| "Local API runtime state is unavailable.".to_string())?;
+    Ok(runtime.as_ref().is_some_and(|runtime| runtime.is_running()))
+}
+
+fn worker_runtime_running(state: &AppState) -> Result<bool, String> {
+    let runtime = state
+        .worker_runtime
+        .lock()
+        .map_err(|_| "Worker runtime state is unavailable.".to_string())?;
+    Ok(runtime.as_ref().is_some_and(|runtime| runtime.is_running()))
+}
+
+fn start_api_runtime(state: &AppState, port: u16) -> Result<(), String> {
+    let mut runtime = state
+        .api_runtime
+        .lock()
+        .map_err(|_| "Local API runtime state is unavailable.".to_string())?;
+
+    if runtime.as_ref().is_some_and(|runtime| runtime.is_running()) {
+        return Ok(());
+    }
+    if let Some(stale) = runtime.take() {
+        stale.stop();
+    }
+
+    *runtime = Some(api_server::start(state.db_path.clone(), port)?);
+    Ok(())
+}
+
+fn stop_api_runtime(state: &AppState) -> Result<(), String> {
+    let runtime = state
+        .api_runtime
+        .lock()
+        .map_err(|_| "Local API runtime state is unavailable.".to_string())?
+        .take();
+    if let Some(runtime) = runtime {
+        runtime.stop();
+    }
+    Ok(())
+}
+
+fn start_worker_runtime(state: &AppState) -> Result<(), String> {
+    let mut runtime = state
+        .worker_runtime
+        .lock()
+        .map_err(|_| "Worker runtime state is unavailable.".to_string())?;
+
+    if runtime.as_ref().is_some_and(|runtime| runtime.is_running()) {
+        return Ok(());
+    }
+    if let Some(stale) = runtime.take() {
+        stale.stop();
+    }
+
+    *runtime = Some(worker::start(state.db_path.clone())?);
+    Ok(())
+}
+
+fn stop_worker_runtime(state: &AppState) -> Result<(), String> {
+    let runtime = state
+        .worker_runtime
+        .lock()
+        .map_err(|_| "Worker runtime state is unavailable.".to_string())?
+        .take();
+    if let Some(runtime) = runtime {
+        runtime.stop();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_local_api_state(state: State<'_, AppState>) -> Result<LocalApiState, String> {
+    let settings = db::get_local_api_settings(&state.db_path)?;
+    Ok(LocalApiState {
+        enabled: settings.enabled,
+        running: api_runtime_running(&state)?,
+        port: settings.port,
+        base_url: format!("http://127.0.0.1:{}", settings.port),
+        api_key_preview: api_key_preview(&settings.api_key),
+    })
+}
+
+#[tauri::command]
+pub fn set_local_api_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<LocalApiState, String> {
+    let settings = db::set_local_api_enabled(&state.db_path, enabled)?;
+
+    if enabled {
+        if let Err(error) = start_api_runtime(&state, settings.port) {
+            let _ = db::set_local_api_enabled(&state.db_path, false);
+            return Err(error);
+        }
+    } else {
+        stop_api_runtime(&state)?;
+    }
+
+    get_local_api_state(state)
+}
+
+#[tauri::command]
+pub fn set_local_api_port(port: u16, state: State<'_, AppState>) -> Result<LocalApiState, String> {
+    let previous = db::get_local_api_settings(&state.db_path)?;
+    if previous.port == port {
+        return get_local_api_state(state);
+    }
+
+    let was_running = api_runtime_running(&state)?;
+    if was_running {
+        stop_api_runtime(&state)?;
+    }
+
+    let updated = db::set_local_api_port(&state.db_path, port)?;
+    if updated.enabled {
+        if let Err(error) = start_api_runtime(&state, updated.port) {
+            let _ = db::set_local_api_port(&state.db_path, previous.port);
+            if previous.enabled {
+                let _ = start_api_runtime(&state, previous.port);
+            }
+            return Err(error);
+        }
+    }
+
+    get_local_api_state(state)
+}
+
+#[tauri::command]
+pub fn reveal_local_api_key(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(db::get_local_api_settings(&state.db_path)?.api_key)
+}
+
+#[tauri::command]
+pub fn rotate_local_api_key(state: State<'_, AppState>) -> Result<String, String> {
+    db::rotate_local_api_key(&state.db_path)
+}
+
+#[tauri::command]
+pub fn get_worker_state(state: State<'_, AppState>) -> Result<WorkerState, String> {
+    let settings = db::get_worker_settings(&state.db_path)?;
+    Ok(WorkerState {
+        enabled: settings.enabled,
+        running: worker_runtime_running(&state)?,
+        mode: settings.mode,
+        max_concurrent_jobs: settings.max_concurrent_jobs,
+        poll_interval_ms: settings.poll_interval_ms,
+        active_assignments: db::count_active_job_assignments(&state.db_path)?,
+        queued_jobs: db::count_queued_jobs(&state.db_path)?,
+        last_tick_at: settings.last_tick_at,
+        last_error: settings.last_error,
+    })
+}
+
+#[tauri::command]
+pub fn set_worker_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<WorkerState, String> {
+    if enabled && !db::get_scheduler_enabled(&state.db_path)? {
+        return Err("Enable Smart Scheduler before starting the allocation worker.".into());
+    }
+
+    db::set_worker_enabled(&state.db_path, enabled)?;
+    if enabled {
+        if let Err(error) = start_worker_runtime(&state) {
+            let _ = db::set_worker_enabled(&state.db_path, false);
+            return Err(error);
+        }
+    } else {
+        stop_worker_runtime(&state)?;
+    }
+
+    get_worker_state(state)
+}
+
+#[tauri::command]
+pub fn run_worker_tick(state: State<'_, AppState>) -> Result<usize, String> {
+    worker::allocation_tick(&state.db_path)
+}
+
 #[tauri::command]
 pub fn get_proxy_pool_state(state: State<'_, AppState>) -> Result<ProxyPoolState, String> {
     refresh_processes(&state)?;
@@ -441,10 +629,7 @@ pub fn update_proxy_pool_item(
 }
 
 #[tauri::command]
-pub fn delete_proxy_pool_item(
-    proxy_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub fn delete_proxy_pool_item(proxy_id: String, state: State<'_, AppState>) -> Result<(), String> {
     refresh_processes(&state)?;
     db::delete_proxy_pool_item(&state.db_path, &proxy_id)
 }

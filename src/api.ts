@@ -4,6 +4,7 @@ import type {
   CreateGenerationJobInput,
   CreateProfileInput,
   GenerationJob,
+  LocalApiState,
   ProfileOperationalState,
   ProxyCheckResult,
   ProxyPoolItem,
@@ -13,6 +14,7 @@ import type {
   SystemInfo,
   UpdateGenerationJobInput,
   UpdateProfileOperationalStateInput,
+  WorkerState,
   Workspace,
 } from "./types";
 
@@ -145,6 +147,60 @@ export async function updateGenerationJob(
 
 export async function cancelGenerationJob(jobId: string): Promise<GenerationJob> {
   return invoke<GenerationJob>("cancel_generation_job", { jobId });
+}
+
+export async function getLocalApiState(): Promise<LocalApiState> {
+  if (!isTauri()) {
+    return {
+      enabled: false,
+      running: false,
+      port: 8787,
+      baseUrl: "http://127.0.0.1:8787",
+      apiKeyPreview: "dola_••••",
+    };
+  }
+  return invoke<LocalApiState>("get_local_api_state");
+}
+
+export async function setLocalApiEnabled(enabled: boolean): Promise<LocalApiState> {
+  return invoke<LocalApiState>("set_local_api_enabled", { enabled });
+}
+
+export async function setLocalApiPort(port: number): Promise<LocalApiState> {
+  return invoke<LocalApiState>("set_local_api_port", { port });
+}
+
+export async function revealLocalApiKey(): Promise<string> {
+  return invoke<string>("reveal_local_api_key");
+}
+
+export async function rotateLocalApiKey(): Promise<string> {
+  return invoke<string>("rotate_local_api_key");
+}
+
+export async function getWorkerState(): Promise<WorkerState> {
+  if (!isTauri()) {
+    return {
+      enabled: false,
+      running: false,
+      mode: "allocation_only",
+      maxConcurrentJobs: 4,
+      pollIntervalMs: 1000,
+      activeAssignments: 0,
+      queuedJobs: 0,
+      lastTickAt: null,
+      lastError: null,
+    };
+  }
+  return invoke<WorkerState>("get_worker_state");
+}
+
+export async function setWorkerEnabled(enabled: boolean): Promise<WorkerState> {
+  return invoke<WorkerState>("set_worker_enabled", { enabled });
+}
+
+export async function runWorkerTick(): Promise<number> {
+  return invoke<number>("run_worker_tick");
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {

@@ -11,17 +11,25 @@ import {
   deleteProfile,
   deleteProxyPoolItem,
   deleteWorkspace,
+  getLocalApiState,
   getProxyPoolState,
   getSchedulerState,
   getSystemInfo,
+  getWorkerState,
   listGenerationJobs,
   listProfiles,
   listWorkspaces,
   openProfiles,
   openSmartProfiles,
+  revealLocalApiKey,
+  rotateLocalApiKey,
   rotateProxyPoolItem,
+  runWorkerTick,
+  setLocalApiEnabled,
+  setLocalApiPort,
   setProxyPoolEnabled,
   setSchedulerEnabled,
+  setWorkerEnabled,
   testProxyPoolItem,
   updateProfileOperationalState,
   updateProxyPoolItem,
@@ -31,11 +39,13 @@ import type {
   CreateGenerationJobInput,
   CreateProfileInput,
   GenerationJob,
+  LocalApiState,
   ProxyPoolItem,
   ProxyPoolItemInput,
   ProxyPoolState,
   SchedulerState,
   SystemInfo,
+  WorkerState,
   Workspace,
 } from "./types";
 import seedanceLogo from "./assets/seedance-logo.svg";
@@ -452,6 +462,26 @@ function App() {
     blockedProfiles: 0,
   });
   const [generationJobs, setGenerationJobs] = useState<GenerationJob[]>([]);
+  const [localApi, setLocalApi] = useState<LocalApiState>({
+    enabled: false,
+    running: false,
+    port: 8787,
+    baseUrl: "http://127.0.0.1:8787",
+    apiKeyPreview: "dola_••••",
+  });
+  const [workerState, setWorkerState] = useState<WorkerState>({
+    enabled: false,
+    running: false,
+    mode: "allocation_only",
+    maxConcurrentJobs: 4,
+    pollIntervalMs: 1000,
+    activeAssignments: 0,
+    queuedJobs: 0,
+    lastTickAt: null,
+    lastError: null,
+  });
+  const [revealedApiKey, setRevealedApiKey] = useState("");
+  const [apiPortDraft, setApiPortDraft] = useState("8787");
   const [showJobForm, setShowJobForm] = useState(false);
   const [jobForm, setJobForm] = useState<CreateGenerationJobInput>({
     prompt: "",
@@ -481,6 +511,8 @@ function App() {
         nextProxyPool,
         nextScheduler,
         nextJobs,
+        nextLocalApi,
+        nextWorker,
       ] = await Promise.all([
         listProfiles(),
         listWorkspaces(),
@@ -488,6 +520,8 @@ function App() {
         getProxyPoolState(),
         getSchedulerState(),
         listGenerationJobs(),
+        getLocalApiState(),
+        getWorkerState(),
       ]);
       setProfiles(nextProfiles);
       setWorkspaces(nextWorkspaces);
@@ -495,6 +529,9 @@ function App() {
       setProxyPool(nextProxyPool);
       setScheduler(nextScheduler);
       setGenerationJobs(nextJobs);
+      setLocalApi(nextLocalApi);
+      setApiPortDraft(String(nextLocalApi.port));
+      setWorkerState(nextWorker);
       setSelected((current) =>
         current.filter((id) =>
           nextProfiles.some((profile) => profile.id === id),
@@ -559,7 +596,7 @@ function App() {
   );
   const queuedJobs = generationJobs.filter((job) => job.status === "queued").length;
   const activeJobs = generationJobs.filter((job) =>
-    ["starting", "generating", "recovering"].includes(job.status),
+    ["assigned", "starting", "generating", "recovering"].includes(job.status),
   ).length;
   const completedJobs = generationJobs.filter((job) => job.status === "completed").length;
   const failedJobs = generationJobs.filter((job) => job.status === "failed").length;
@@ -692,6 +729,87 @@ function App() {
       setBanner({
         kind: "success",
         text: "Generation job queued persistently.",
+      });
+      await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleLocalApi(enabled: boolean) {
+    await perform(
+      () => setLocalApiEnabled(enabled),
+      enabled
+        ? "Local API started on loopback only."
+        : "Local API stopped.",
+    );
+    if (!enabled) setRevealedApiKey("");
+  }
+
+  async function saveApiPort() {
+    const port = Number(apiPortDraft);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setBanner({
+        kind: "error",
+        text: "Local API port must be between 1024 and 65535.",
+      });
+      return;
+    }
+    await perform(() => setLocalApiPort(port), `Local API moved to port ${port}.`);
+  }
+
+  async function revealApiKey() {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const key = await revealLocalApiKey();
+      setRevealedApiKey(key);
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rotateApiKey() {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const key = await rotateLocalApiKey();
+      setRevealedApiKey(key);
+      setBanner({
+        kind: "success",
+        text: "Local API key rotated. Existing clients must use the new key.",
+      });
+      await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleWorker(enabled: boolean) {
+    await perform(
+      () => setWorkerEnabled(enabled),
+      enabled
+        ? "Allocation worker started."
+        : "Allocation worker stopped.",
+    );
+  }
+
+  async function allocateNow() {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const count = await runWorkerTick();
+      setBanner({
+        kind: "success",
+        text: count
+          ? `Assigned ${count} queued job(s) to Ready profiles.`
+          : "Worker tick completed; no new assignments.",
       });
       await refresh();
     } catch (error) {
@@ -1440,15 +1558,141 @@ function App() {
               <div className={`banner ${banner.kind}`}>{banner.text}</div>
             )}
 
+            <section className="runtime-grid">
+              <article className="runtime-card">
+                <div className="runtime-card-head">
+                  <div>
+                    <span className="eyebrow">LOCAL API</span>
+                    <h3>Loopback Gateway</h3>
+                  </div>
+                  <span className={localApi.running ? "runtime-chip on" : "runtime-chip"}>
+                    {localApi.running ? "RUNNING" : "STOPPED"}
+                  </span>
+                </div>
+                <p>
+                  Authenticated HTTP API bound only to <code>127.0.0.1</code>.
+                </p>
+                <div className="runtime-row">
+                  <span>Base URL</span>
+                  <code>{localApi.baseUrl}</code>
+                </div>
+                <div className="runtime-row runtime-port-row">
+                  <span>Port</span>
+                  <div>
+                    <input
+                      value={apiPortDraft}
+                      inputMode="numeric"
+                      onChange={(event) => setApiPortDraft(event.target.value)}
+                    />
+                    <button
+                      className="mini-button"
+                      disabled={busy || Number(apiPortDraft) === localApi.port}
+                      onClick={() => void saveApiPort()}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+                <div className="runtime-row">
+                  <span>API key</span>
+                  <code>{revealedApiKey || localApi.apiKeyPreview}</code>
+                </div>
+                <div className="runtime-actions">
+                  <button
+                    className="mini-button"
+                    disabled={busy}
+                    onClick={() =>
+                      revealedApiKey
+                        ? setRevealedApiKey("")
+                        : void revealApiKey()
+                    }
+                  >
+                    {revealedApiKey ? "Hide key" : "Reveal key"}
+                  </button>
+                  <button
+                    className="mini-button"
+                    disabled={busy}
+                    onClick={() => void rotateApiKey()}
+                  >
+                    Rotate key
+                  </button>
+                  <label className="master-toggle runtime-toggle" title="Enable Local API">
+                    <input
+                      type="checkbox"
+                      checked={localApi.enabled}
+                      disabled={busy}
+                      onChange={(event) => void toggleLocalApi(event.target.checked)}
+                    />
+                    <span />
+                  </label>
+                </div>
+              </article>
+
+              <article className="runtime-card">
+                <div className="runtime-card-head">
+                  <div>
+                    <span className="eyebrow">BACKGROUND WORKER</span>
+                    <h3>Profile Allocator</h3>
+                  </div>
+                  <span className={workerState.running ? "runtime-chip on" : "runtime-chip"}>
+                    {workerState.running ? "RUNNING" : "STOPPED"}
+                  </span>
+                </div>
+                <p>
+                  Allocation-only mode claims queued jobs and reserves Ready profiles.
+                </p>
+                <div className="runtime-metrics">
+                  <div>
+                    <span>Queued</span>
+                    <strong>{workerState.queuedJobs}</strong>
+                  </div>
+                  <div>
+                    <span>Assigned</span>
+                    <strong>{workerState.activeAssignments}</strong>
+                  </div>
+                  <div>
+                    <span>Max active</span>
+                    <strong>{workerState.maxConcurrentJobs}</strong>
+                  </div>
+                </div>
+                <div className="runtime-row">
+                  <span>Last tick</span>
+                  <strong>{relativeTime(workerState.lastTickAt)}</strong>
+                </div>
+                {workerState.lastError && (
+                  <div className="runtime-error">{workerState.lastError}</div>
+                )}
+                <div className="runtime-actions">
+                  <button
+                    className="mini-button"
+                    disabled={busy || !workerState.enabled}
+                    onClick={() => void allocateNow()}
+                  >
+                    Allocate now
+                  </button>
+                  <span className="runtime-mode">{workerState.mode}</span>
+                  <label className="master-toggle runtime-toggle" title="Enable allocation worker">
+                    <input
+                      type="checkbox"
+                      checked={workerState.enabled}
+                      disabled={busy || (!scheduler.enabled && !workerState.enabled)}
+                      onChange={(event) => void toggleWorker(event.target.checked)}
+                    />
+                    <span />
+                  </label>
+                </div>
+              </article>
+            </section>
+
             <section className="queue-foundation-card">
               <div>
                 <span className="eyebrow">PERSISTENT ORCHESTRATION</span>
                 <h3>Queue foundation active</h3>
                 <p>
-                  Jobs are stored in SQLite. If the app restarts while a future worker
-                  is starting or generating, those jobs return as Recovering instead of
-                  disappearing. Automatic Seedance submission/polling is not connected
-                  yet.
+                  Jobs are stored in SQLite and can now be queued through the local
+                  API. The allocation worker assigns queued jobs to Ready profiles.
+                  Automatic Seedance website submission and result polling remain a
+                  separate execution-adapter phase.
                 </p>
               </div>
               <div className="queue-ready-chip">RECOVERY READY</div>
@@ -1483,8 +1727,8 @@ function App() {
                   <div>
                     <strong>Queue Seedance job</strong>
                     <span>
-                      This creates a persistent job record. The generation worker will
-                      be connected in the next integration phase.
+                      This creates a persistent job record. When the allocation worker
+                      is enabled, it can assign the job to a Ready profile automatically.
                     </span>
                   </div>
                   <button
