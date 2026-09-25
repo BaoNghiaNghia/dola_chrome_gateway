@@ -1,6 +1,5 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    __scaffold_lib::run()
+    dola_chrome_gateway_lib::run()
 }

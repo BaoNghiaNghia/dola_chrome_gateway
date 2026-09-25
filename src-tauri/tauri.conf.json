@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "__scaffold",
+  "productName": "Dola Chrome Gateway",
   "version": "0.1.0",
   "identifier": "com.dola.chromegateway",
   "build": {
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "__scaffold",
-        "width": 800,
-        "height": 600
+        "title": "Dola Chrome Gateway",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1040,
+        "minHeight": 680,
+        "center": true
       }
     ],
     "security": {
