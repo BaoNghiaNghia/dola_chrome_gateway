@@ -65,6 +65,7 @@ POST /v1/adapter/jobs/{job_id}/start
 POST /v1/adapter/jobs/{job_id}/progress
 POST /v1/adapter/jobs/{job_id}/complete
 POST /v1/adapter/jobs/{job_id}/fail
+POST /v1/adapter/jobs/{job_id}/profile-state
 POST /v1/adapter/jobs/{job_id}/browser/open
 POST /v1/adapter/jobs/{job_id}/browser/close
 ```
@@ -85,6 +86,55 @@ The adapter protocol uses short-lived per-job leases so two adapter processes ca
 For browser execution, an adapter can open the job's assigned persistent Chrome profile through `/browser/open`. The gateway keeps the profile's existing `--user-data-dir` session, applies the system Proxy Pool before launch when enabled, and starts Chrome DevTools on `127.0.0.1` with an ephemeral port. The response contains `cdpHttpUrl` and `browserWebsocketUrl` for that local adapter session. A profile already running without the gateway's local DevTools mode is not silently reattached; it must be closed and reopened through the adapter endpoint. `/browser/close` closes only that assigned profile and releases its proxy slot.
 
 Automatic Seedance website interaction itself remains isolated in the adapter layer; the Tauri core does not store login credentials or extract browser cookies.
+
+## Seedance execution adapter
+
+The repository includes a dependency-free Node.js adapter under `adapter/`. It connects only to the gateway's loopback API and to the loopback Chrome DevTools endpoint created for the leased profile.
+
+Before starting it:
+
+1. In **Profiles**, mark usable logged-in profiles as **Ready** and turn **Smart Scheduler** ON.
+2. In **Queue**, turn the **Allocation Worker** and **Local API** ON.
+3. Click **Reveal key** in the Local API card.
+4. Open Command Prompt in the project folder:
+
+```cmd
+set DOLA_GATEWAY_KEY=YOUR_REVEALED_KEY
+START_ADAPTER.bat
+```
+
+Or run it directly:
+
+```cmd
+set DOLA_GATEWAY_KEY=YOUR_REVEALED_KEY
+npm run adapter
+```
+
+Useful optional environment settings:
+
+```text
+DOLA_GATEWAY_URL=http://127.0.0.1:8787
+DOLA_ADAPTER_CONCURRENCY=1
+DOLA_ADAPTER_TIMEOUT_SECONDS=1200
+DOLA_ADAPTER_MANUAL_VERIFICATION_SECONDS=180
+```
+
+The adapter currently automates the normal Dola UI flow for Seedance 2.0/2.5: open the persistent profile, verify that the chat composer is available, open video generation, select model/ratio/duration, submit the prompt, capture the resulting conversation ID, then monitor the conversation for a browser-visible video result. Dola durations supported by this adapter are **10s, 15s, and 30s**.
+
+The adapter does **not** extract login cookies and does **not** solve verification challenges. If Dola displays a verification/captcha frame, the visible Chrome window stays open for the configured manual-verification window while the adapter keeps the job lease alive. If verification is not completed, the job is returned to the retry flow with a cooldown.
+
+Adapter-detected account problems feed back into Profile Health:
+
+- session unavailable -> **Need login**
+- daily generation limit -> temporary **Quota blocked**
+- insufficient credit -> scheduling disabled until manually re-enabled
+- verification timeout -> short **Cooldown**
+
+Run the dependency-free adapter unit tests with:
+
+```cmd
+npm run adapter:test
+```
 
 ## Stack
 

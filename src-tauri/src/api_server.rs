@@ -2,8 +2,9 @@ use crate::db;
 use crate::execution_browser;
 use crate::models::{
     AdapterBrowserCloseRequest, AdapterBrowserOpenRequest, AdapterClaimRequest,
-    AdapterCompleteRequest, AdapterFailRequest, AdapterHeartbeatRequest, AdapterProgressRequest,
-    AdapterStartRequest, CreateGenerationJobRequest,
+    AdapterCompleteRequest, AdapterFailRequest, AdapterHeartbeatRequest,
+    AdapterProfileStateRequest, AdapterProgressRequest, AdapterStartRequest,
+    CreateGenerationJobRequest,
 };
 use crate::state::BackgroundRuntime;
 use serde_json::{json, Value};
@@ -266,6 +267,30 @@ fn handle_request(mut stream: TcpStream, db_path: &Path) {
             match result {
                 Ok(()) => {
                     let _ = write_json(&mut stream, json!({"closed": true}), 200);
+                }
+                Err(error) => {
+                    let status = if error.contains("lease") || error.contains("owned") {
+                        409
+                    } else {
+                        400
+                    };
+                    write_error(&mut stream, error, status);
+                }
+            }
+            return;
+        }
+
+        if let Some(job_id) = adapter_path.strip_suffix("/profile-state") {
+            let result = serde_json::from_slice::<AdapterProfileStateRequest>(&request.body)
+                .map_err(|e| format!("Invalid profile state request: {e}"))
+                .and_then(|payload| {
+                    let lease_token = payload.lease_token.clone();
+                    db::update_leased_profile_state(db_path, job_id, &lease_token, payload)
+                });
+
+            match result {
+                Ok(state) => {
+                    let _ = write_json(&mut stream, json!(state), 200);
                 }
                 Err(error) => {
                     let status = if error.contains("lease") || error.contains("owned") {
@@ -653,6 +678,44 @@ mod tests {
             stored.result_url.as_deref(),
             Some("https://example.test/result.mp4")
         );
+
+        runtime.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adapter_can_update_assigned_profile_health() {
+        let (root, db_path) = temp_db();
+        let assigned = create_assigned_job(&root, &db_path);
+        let profile_id = assigned.profile_id.clone().unwrap();
+        let port = free_port();
+        let runtime = start(db_path.clone(), port).unwrap();
+        let api_key = db::get_local_api_settings(&db_path).unwrap().api_key;
+
+        let claim = post_json(
+            port,
+            "/v1/adapter/claim",
+            &api_key,
+            r#"{"workerId":"adapter-health","leaseSeconds":120}"#,
+        );
+        let claim_json: Value = serde_json::from_str(response_body(&claim)).unwrap();
+        let lease_token = claim_json["claim"]["leaseToken"].as_str().unwrap();
+
+        let body = format!(
+            r#"{{"leaseToken":"{lease_token}","sessionStatus":"needs_login","loginCheckedAt":"2026-09-25T12:00:00Z"}}"#
+        );
+        let response = post_json(
+            port,
+            &format!("/v1/adapter/jobs/{}/profile-state", assigned.id),
+            &api_key,
+            &body,
+        );
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"availability\":\"needs_login\""));
+
+        let profile = db::get_profile(&db_path, &profile_id).unwrap().unwrap();
+        assert_eq!(profile.operational.session_status, "needs_login");
+        assert_eq!(profile.operational.availability, "needs_login");
 
         runtime.stop();
         let _ = fs::remove_dir_all(root);

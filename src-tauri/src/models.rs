@@ -316,6 +316,21 @@ pub struct AdapterFailRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AdapterProfileStateRequest {
+    pub lease_token: String,
+    pub scheduling_enabled: Option<bool>,
+    pub session_status: Option<String>,
+    pub login_checked_at: Option<String>,
+    pub cooldown_until: Option<String>,
+    pub rate_limited_until: Option<String>,
+    pub quota_blocked_until: Option<String>,
+    pub credit_balance: Option<f64>,
+    pub used_today: Option<u32>,
+    pub remaining: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AdapterBrowserOpenRequest {
     pub lease_token: String,
     pub start_url: Option<String>,

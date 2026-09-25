@@ -1,8 +1,9 @@
 use crate::models::{
-    ActiveProxyAssignment, AdapterClaim, AdapterProfileContext, BrowserProfile,
-    CreateGenerationJobRequest, CreateProfileRequest, GenerationJob, ProfileOperationalState,
-    ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest, ProxySettings, ProxySettingsRequest,
-    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, Workspace,
+    ActiveProxyAssignment, AdapterClaim, AdapterProfileContext, AdapterProfileStateRequest,
+    BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest, GenerationJob,
+    ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest, ProxySettings,
+    ProxySettingsRequest, UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest,
+    Workspace,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1709,6 +1710,36 @@ pub fn get_leased_generation_job(
             "Generation job is not owned by this adapter lease or is no longer executable."
                 .to_string()
         })
+}
+
+pub fn update_leased_profile_state(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    request: AdapterProfileStateRequest,
+) -> Result<ProfileOperationalState, String> {
+    let job = get_leased_generation_job(db_path, job_id, lease_token)?;
+    let profile_id = job
+        .profile_id
+        .as_deref()
+        .ok_or_else(|| "Generation job has no assigned profile.".to_string())?;
+
+    update_profile_operational_state(
+        db_path,
+        profile_id,
+        UpdateProfileOperationalStateRequest {
+            scheduling_enabled: request.scheduling_enabled,
+            session_status: request.session_status,
+            login_checked_at: request.login_checked_at,
+            cooldown_until: request.cooldown_until,
+            rate_limited_until: request.rate_limited_until,
+            quota_blocked_until: request.quota_blocked_until,
+            credit_balance: request.credit_balance,
+            used_today: request.used_today,
+            remaining: request.remaining,
+            last_used_at: Some(Utc::now().to_rfc3339()),
+        },
+    )
 }
 
 pub fn create_generation_job(

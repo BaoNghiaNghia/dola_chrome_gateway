@@ -1775,9 +1775,9 @@ function App() {
                         })
                       }
                     >
-                      <option value={5}>5s</option>
                       <option value={10}>10s</option>
                       <option value={15}>15s</option>
+                      <option value={30}>30s</option>
                     </select>
                   </label>
                   <label>
