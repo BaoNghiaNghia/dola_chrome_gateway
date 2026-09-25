@@ -1,10 +1,10 @@
 use crate::models::{
-    ActiveProxyAssignment, BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest,
-    GenerationJob, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest,
-    ProxySettings, ProxySettingsRequest, UpdateGenerationJobRequest,
-    UpdateProfileOperationalStateRequest, Workspace,
+    ActiveProxyAssignment, AdapterClaim, AdapterProfileContext, BrowserProfile,
+    CreateGenerationJobRequest, CreateProfileRequest, GenerationJob, ProfileOperationalState,
+    ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest, ProxySettings, ProxySettingsRequest,
+    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, Workspace,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use uuid::Uuid;
@@ -14,6 +14,30 @@ fn connection(db_path: &Path) -> Result<Connection, String> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| format!("Cannot enable database constraints: {e}"))?;
     Ok(conn)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| e.to_string())?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+
+    if !exists {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+        ))
+        .map_err(|e| format!("Cannot add {table}.{column}: {e}"))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +245,12 @@ pub fn init(db_path: &Path) -> Result<(), String> {
             error_message TEXT,
             deadline_at TEXT,
             last_poll_at TEXT,
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            lease_token TEXT,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            next_retry_at TEXT,
             created_at TEXT NOT NULL,
             started_at TEXT,
             completed_at TEXT,
@@ -288,6 +318,28 @@ pub fn init(db_path: &Path) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("Cannot initialize database: {e}"))?;
+
+    ensure_column(
+        &conn,
+        "generation_jobs",
+        "progress_percent",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        &conn,
+        "generation_jobs",
+        "attempt_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(&conn, "generation_jobs", "lease_token", "TEXT")?;
+    ensure_column(&conn, "generation_jobs", "lease_owner", "TEXT")?;
+    ensure_column(&conn, "generation_jobs", "lease_expires_at", "TEXT")?;
+    ensure_column(&conn, "generation_jobs", "next_retry_at", "TEXT")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_generation_jobs_adapter
+            ON generation_jobs(status, next_retry_at, lease_expires_at, created_at);",
+    )
+    .map_err(|e| format!("Cannot initialize adapter job index: {e}"))?;
 
     let api_key = format!(
         "dola_{}{}",
@@ -1160,11 +1212,19 @@ pub fn list_queued_generation_jobs(
     limit: usize,
 ) -> Result<Vec<GenerationJob>, String> {
     let conn = connection(db_path)?;
-    let sql =
-        format!("{GENERATION_JOB_SELECT} WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?1");
+    let sql = format!(
+        "{GENERATION_JOB_SELECT}
+         WHERE status = 'queued'
+           AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+         ORDER BY created_at ASC
+         LIMIT ?2"
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let jobs = stmt
-        .query_map(params![limit.max(1) as i64], row_to_generation_job)
+        .query_map(
+            params![Utc::now().to_rfc3339(), limit.max(1) as i64],
+            row_to_generation_job,
+        )
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -1310,17 +1370,23 @@ fn row_to_generation_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Generation
         error_message: row.get(11)?,
         deadline_at: row.get(12)?,
         last_poll_at: row.get(13)?,
-        created_at: row.get(14)?,
-        started_at: row.get(15)?,
-        completed_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        progress_percent: row.get::<_, i64>(14)?.clamp(0, 100) as u8,
+        attempt_count: row.get::<_, i64>(15)?.max(0) as u32,
+        lease_owner: row.get(16)?,
+        lease_expires_at: row.get(17)?,
+        next_retry_at: row.get(18)?,
+        created_at: row.get(19)?,
+        started_at: row.get(20)?,
+        completed_at: row.get(21)?,
+        updated_at: row.get(22)?,
     })
 }
 
 const GENERATION_JOB_SELECT: &str =
     "SELECT id, prompt, model, duration_seconds, ratio, status, profile_id, proxy_id,
             external_task_id, result_url, failure_code, error_message, deadline_at,
-            last_poll_at, created_at, started_at, completed_at, updated_at
+            last_poll_at, progress_percent, attempt_count, lease_owner, lease_expires_at,
+            next_retry_at, created_at, started_at, completed_at, updated_at
      FROM generation_jobs";
 
 pub fn list_generation_jobs(db_path: &Path) -> Result<Vec<GenerationJob>, String> {
@@ -1341,6 +1407,287 @@ pub fn get_generation_job(db_path: &Path, job_id: &str) -> Result<Option<Generat
     conn.query_row(&sql, params![job_id], row_to_generation_job)
         .optional()
         .map_err(|e| e.to_string())
+}
+
+pub fn claim_adapter_job(
+    db_path: &Path,
+    worker_id: &str,
+    lease_seconds: u64,
+) -> Result<Option<AdapterClaim>, String> {
+    let worker_id = worker_id.trim();
+    if worker_id.is_empty() {
+        return Err("Adapter worker_id is required.".into());
+    }
+
+    let lease_seconds = lease_seconds.clamp(15, 900);
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+    let lease_expires_at = (now + ChronoDuration::seconds(lease_seconds as i64)).to_rfc3339();
+    let lease_token = Uuid::new_v4().to_string();
+    let conn = connection(db_path)?;
+
+    let sql = format!(
+        "{GENERATION_JOB_SELECT}
+         WHERE status IN ('assigned', 'recovering')
+           AND profile_id IS NOT NULL
+           AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?1)
+           AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+         ORDER BY created_at ASC
+         LIMIT 1"
+    );
+    let candidate = conn
+        .query_row(&sql, params![&now_text], row_to_generation_job)
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+
+    let changed = conn
+        .execute(
+            "UPDATE generation_jobs
+             SET lease_token = ?1,
+                 lease_owner = ?2,
+                 lease_expires_at = ?3,
+                 attempt_count = attempt_count + 1,
+                 updated_at = ?4
+             WHERE id = ?5
+               AND status IN ('assigned', 'recovering')
+               AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?4)",
+            params![
+                &lease_token,
+                worker_id,
+                &lease_expires_at,
+                &now_text,
+                &candidate.id
+            ],
+        )
+        .map_err(|e| format!("Cannot claim generation job: {e}"))?;
+
+    if changed == 0 {
+        return Ok(None);
+    }
+
+    let job = get_generation_job(db_path, &candidate.id)?
+        .ok_or_else(|| "Claimed generation job disappeared.".to_string())?;
+    let profile_id = job
+        .profile_id
+        .as_deref()
+        .ok_or_else(|| "Claimed generation job has no profile assignment.".to_string())?;
+    let profile = get_profile(db_path, profile_id)?
+        .ok_or_else(|| "Assigned profile no longer exists.".to_string())?;
+
+    Ok(Some(AdapterClaim {
+        lease_token,
+        lease_expires_at,
+        job,
+        profile: AdapterProfileContext {
+            id: profile.id,
+            name: profile.name,
+            profile_path: profile.profile_path,
+            active_proxy: profile.active_proxy,
+        },
+    }))
+}
+
+fn update_leased_job(
+    db_path: &Path,
+    job_id: &str,
+    sql: &str,
+    values: &[&dyn rusqlite::ToSql],
+) -> Result<GenerationJob, String> {
+    let conn = connection(db_path)?;
+    let changed = conn
+        .execute(sql, values)
+        .map_err(|e| format!("Cannot update leased generation job: {e}"))?;
+    if changed == 0 {
+        return Err(format!(
+            "Generation job {job_id} is not owned by this adapter lease or is no longer mutable."
+        ));
+    }
+    get_generation_job(db_path, job_id)?
+        .ok_or_else(|| "Updated generation job could not be loaded.".into())
+}
+
+pub fn heartbeat_adapter_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    lease_seconds: u64,
+) -> Result<GenerationJob, String> {
+    let lease_seconds = lease_seconds.clamp(15, 900);
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+    let expires = (now + ChronoDuration::seconds(lease_seconds as i64)).to_rfc3339();
+    let sql = "UPDATE generation_jobs
+         SET lease_expires_at = ?1, updated_at = ?2
+         WHERE id = ?3 AND lease_token = ?4
+           AND status IN ('assigned', 'recovering', 'starting', 'generating')";
+    let values: [&dyn rusqlite::ToSql; 4] = [&expires, &now_text, &job_id, &lease_token];
+    update_leased_job(db_path, job_id, sql, &values)
+}
+
+pub fn start_adapter_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    external_task_id: Option<&str>,
+    deadline_at: Option<&str>,
+) -> Result<GenerationJob, String> {
+    let now = Utc::now().to_rfc3339();
+    let sql = "UPDATE generation_jobs
+         SET status = 'starting',
+             external_task_id = COALESCE(?1, external_task_id),
+             deadline_at = COALESCE(?2, deadline_at),
+             started_at = COALESCE(started_at, ?3),
+             updated_at = ?3
+         WHERE id = ?4 AND lease_token = ?5
+           AND status IN ('assigned', 'recovering', 'starting')";
+    let values: [&dyn rusqlite::ToSql; 5] =
+        [&external_task_id, &deadline_at, &now, &job_id, &lease_token];
+    update_leased_job(db_path, job_id, sql, &values)
+}
+
+pub fn progress_adapter_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    external_task_id: Option<&str>,
+    progress_percent: u8,
+) -> Result<GenerationJob, String> {
+    let now = Utc::now().to_rfc3339();
+    let progress = progress_percent.min(99) as i64;
+    let sql = "UPDATE generation_jobs
+         SET status = 'generating',
+             external_task_id = COALESCE(?1, external_task_id),
+             progress_percent = MAX(progress_percent, ?2),
+             last_poll_at = ?3,
+             started_at = COALESCE(started_at, ?3),
+             updated_at = ?3
+         WHERE id = ?4 AND lease_token = ?5
+           AND status IN ('assigned', 'recovering', 'starting', 'generating')";
+    let values: [&dyn rusqlite::ToSql; 5] =
+        [&external_task_id, &progress, &now, &job_id, &lease_token];
+    update_leased_job(db_path, job_id, sql, &values)
+}
+
+pub fn complete_adapter_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    result_url: &str,
+) -> Result<GenerationJob, String> {
+    let result_url = result_url.trim();
+    if result_url.is_empty() {
+        return Err("A result_url is required to complete a generation job.".into());
+    }
+
+    let before = get_generation_job(db_path, job_id)?
+        .ok_or_else(|| "Generation job does not exist.".to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let sql = "UPDATE generation_jobs
+         SET status = 'completed',
+             result_url = ?1,
+             progress_percent = 100,
+             completed_at = ?2,
+             last_poll_at = ?2,
+             failure_code = NULL,
+             error_message = NULL,
+             lease_token = NULL,
+             lease_owner = NULL,
+             lease_expires_at = NULL,
+             next_retry_at = NULL,
+             updated_at = ?2
+         WHERE id = ?3 AND lease_token = ?4
+           AND status IN ('assigned', 'recovering', 'starting', 'generating')";
+    let values: [&dyn rusqlite::ToSql; 4] = [&result_url, &now, &job_id, &lease_token];
+    let job = update_leased_job(db_path, job_id, sql, &values)?;
+
+    if let Some(profile_id) = before.profile_id.as_deref() {
+        let conn = connection(db_path)?;
+        conn.execute(
+            "UPDATE profile_operational_state
+             SET used_today = used_today + 1,
+                 last_used_at = ?1,
+                 updated_at = ?1
+             WHERE profile_id = ?2",
+            params![&now, profile_id],
+        )
+        .map_err(|e| format!("Cannot update profile usage: {e}"))?;
+    }
+
+    Ok(job)
+}
+
+pub fn fail_adapter_job(
+    db_path: &Path,
+    job_id: &str,
+    lease_token: &str,
+    failure_code: Option<&str>,
+    error_message: Option<&str>,
+    retryable: bool,
+    retry_after_seconds: u64,
+) -> Result<GenerationJob, String> {
+    let current = get_generation_job(db_path, job_id)?
+        .ok_or_else(|| "Generation job does not exist.".to_string())?;
+    if current.lease_owner.is_none() {
+        return Err("Generation job is not currently leased.".into());
+    }
+
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+    let can_retry = retryable && current.attempt_count < 3;
+
+    if can_retry {
+        let retry_at =
+            (now + ChronoDuration::seconds(retry_after_seconds.clamp(1, 3600) as i64)).to_rfc3339();
+        let sql = "UPDATE generation_jobs
+             SET status = 'queued',
+                 profile_id = NULL,
+                 proxy_id = NULL,
+                 external_task_id = NULL,
+                 progress_percent = 0,
+                 failure_code = ?1,
+                 error_message = ?2,
+                 next_retry_at = ?3,
+                 lease_token = NULL,
+                 lease_owner = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = ?4
+             WHERE id = ?5 AND lease_token = ?6
+               AND status IN ('assigned', 'recovering', 'starting', 'generating')";
+        let values: [&dyn rusqlite::ToSql; 6] = [
+            &failure_code,
+            &error_message,
+            &retry_at,
+            &now_text,
+            &job_id,
+            &lease_token,
+        ];
+        update_leased_job(db_path, job_id, sql, &values)
+    } else {
+        let sql = "UPDATE generation_jobs
+             SET status = 'failed',
+                 failure_code = ?1,
+                 error_message = ?2,
+                 completed_at = ?3,
+                 last_poll_at = ?3,
+                 lease_token = NULL,
+                 lease_owner = NULL,
+                 lease_expires_at = NULL,
+                 updated_at = ?3
+             WHERE id = ?4 AND lease_token = ?5
+               AND status IN ('assigned', 'recovering', 'starting', 'generating')";
+        let values: [&dyn rusqlite::ToSql; 5] = [
+            &failure_code,
+            &error_message,
+            &now_text,
+            &job_id,
+            &lease_token,
+        ];
+        update_leased_job(db_path, job_id, sql, &values)
+    }
 }
 
 pub fn create_generation_job(
@@ -1482,7 +1829,12 @@ pub fn cancel_generation_job(db_path: &Path, job_id: &str) -> Result<GenerationJ
     let conn = connection(db_path)?;
     conn.execute(
         "UPDATE generation_jobs
-         SET status = 'cancelled', completed_at = ?1, updated_at = ?1
+         SET status = 'cancelled',
+             completed_at = ?1,
+             lease_token = NULL,
+             lease_owner = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?1
          WHERE id = ?2",
         params![&now, job_id],
     )

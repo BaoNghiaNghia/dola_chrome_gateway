@@ -1855,8 +1855,18 @@ function App() {
                           </span>
                           <strong>{job.prompt}</strong>
                           <small>
-                            {job.model} · {job.durationSeconds}s · {job.ratio}
+                            {job.model} · {job.durationSeconds}s · {job.ratio} · attempt {job.attemptCount}
                           </small>
+                          <div className="job-progress-track" aria-label={`Progress ${job.progressPercent}%`}>
+                            <span style={{ width: `${job.progressPercent}%` }} />
+                          </div>
+                          <div className="job-meta-inline">
+                            <span>{job.progressPercent}%</span>
+                            {job.leaseOwner && <span>lease: {job.leaseOwner}</span>}
+                            {job.nextRetryAt && (
+                              <span>retry {relativeTime(job.nextRetryAt)}</span>
+                            )}
+                          </div>
                         </div>
                         <div className="job-assignment">
                           <span>Profile</span>

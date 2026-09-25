@@ -1,5 +1,8 @@
 use crate::db;
-use crate::models::CreateGenerationJobRequest;
+use crate::models::{
+    AdapterClaimRequest, AdapterCompleteRequest, AdapterFailRequest, AdapterHeartbeatRequest,
+    AdapterProgressRequest, AdapterStartRequest, CreateGenerationJobRequest,
+};
 use crate::state::BackgroundRuntime;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,6 +31,7 @@ fn reason_phrase(status: u16) -> &'static str {
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        409 => "Conflict",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
         500 => "Internal Server Error",
@@ -197,6 +201,114 @@ fn handle_request(mut stream: TcpStream, db_path: &Path) {
         return;
     }
 
+    if request.method == "POST" && request.path == "/v1/adapter/claim" {
+        let parsed = serde_json::from_slice::<AdapterClaimRequest>(&request.body)
+            .map_err(|e| format!("Invalid adapter claim request: {e}"))
+            .and_then(|payload| {
+                db::claim_adapter_job(
+                    db_path,
+                    &payload.worker_id,
+                    payload.lease_seconds.unwrap_or(120),
+                )
+            });
+        match parsed {
+            Ok(claim) => {
+                let _ = write_json(&mut stream, json!({"claim": claim}), 200);
+            }
+            Err(error) => write_error(&mut stream, error, 400),
+        }
+        return;
+    }
+
+    if let Some(adapter_path) = request.path.strip_prefix("/v1/adapter/jobs/") {
+        if request.method != "POST" {
+            write_error(&mut stream, "Method not allowed.", 405);
+            return;
+        }
+
+        let Some((job_id, action)) = adapter_path.rsplit_once('/') else {
+            write_error(&mut stream, "Adapter action is required.", 404);
+            return;
+        };
+
+        let result = match action {
+            "heartbeat" => serde_json::from_slice::<AdapterHeartbeatRequest>(&request.body)
+                .map_err(|e| format!("Invalid heartbeat request: {e}"))
+                .and_then(|payload| {
+                    db::heartbeat_adapter_job(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        payload.lease_seconds.unwrap_or(120),
+                    )
+                }),
+            "start" => serde_json::from_slice::<AdapterStartRequest>(&request.body)
+                .map_err(|e| format!("Invalid start request: {e}"))
+                .and_then(|payload| {
+                    db::start_adapter_job(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        payload.external_task_id.as_deref(),
+                        payload.deadline_at.as_deref(),
+                    )
+                }),
+            "progress" => serde_json::from_slice::<AdapterProgressRequest>(&request.body)
+                .map_err(|e| format!("Invalid progress request: {e}"))
+                .and_then(|payload| {
+                    db::progress_adapter_job(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        payload.external_task_id.as_deref(),
+                        payload.progress_percent.unwrap_or(0),
+                    )
+                }),
+            "complete" => serde_json::from_slice::<AdapterCompleteRequest>(&request.body)
+                .map_err(|e| format!("Invalid complete request: {e}"))
+                .and_then(|payload| {
+                    db::complete_adapter_job(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        &payload.result_url,
+                    )
+                }),
+            "fail" => serde_json::from_slice::<AdapterFailRequest>(&request.body)
+                .map_err(|e| format!("Invalid fail request: {e}"))
+                .and_then(|payload| {
+                    db::fail_adapter_job(
+                        db_path,
+                        job_id,
+                        &payload.lease_token,
+                        payload.failure_code.as_deref(),
+                        payload.error_message.as_deref(),
+                        payload.retryable.unwrap_or(false),
+                        payload.retry_after_seconds.unwrap_or(30),
+                    )
+                }),
+            _ => {
+                write_error(&mut stream, "Adapter action not found.", 404);
+                return;
+            }
+        };
+
+        match result {
+            Ok(job) => {
+                let _ = write_json(&mut stream, json!(job), 200);
+            }
+            Err(error) => {
+                let status = if error.contains("lease") || error.contains("owned") {
+                    409
+                } else {
+                    400
+                };
+                write_error(&mut stream, error, status);
+            }
+        }
+        return;
+    }
+
     if request.method == "GET" && request.path == "/v1/videos" {
         match db::list_generation_jobs(db_path) {
             Ok(jobs) => {
@@ -283,6 +395,11 @@ pub fn start(db_path: PathBuf, port: u16) -> Result<BackgroundRuntime, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{
+        CreateGenerationJobRequest, CreateProfileRequest, GenerationJob,
+        UpdateProfileOperationalStateRequest,
+    };
+    use chrono::Utc;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -313,6 +430,75 @@ mod tests {
         response
     }
 
+    fn response_body(response: &str) -> &str {
+        response
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .unwrap_or("")
+    }
+
+    fn post_json(port: u16, path: &str, api_key: &str, body: &str) -> String {
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {api_key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        send(port, &request)
+    }
+
+    fn create_assigned_job(root: &Path, db_path: &Path) -> GenerationJob {
+        let profiles_dir = root.join("profiles");
+        fs::create_dir_all(&profiles_dir).unwrap();
+
+        let profile = db::create_profile(
+            db_path,
+            &profiles_dir,
+            CreateProfileRequest {
+                name: "Adapter profile".into(),
+                email: None,
+                group_name: None,
+                services: vec![],
+                tags: vec![],
+                notes: None,
+                proxy: None,
+            },
+        )
+        .unwrap();
+
+        db::update_profile_operational_state(
+            db_path,
+            &profile.id,
+            UpdateProfileOperationalStateRequest {
+                scheduling_enabled: Some(true),
+                session_status: Some("healthy".into()),
+                login_checked_at: Some(Utc::now().to_rfc3339()),
+                cooldown_until: None,
+                rate_limited_until: None,
+                quota_blocked_until: None,
+                credit_balance: None,
+                used_today: Some(0),
+                remaining: None,
+                last_used_at: None,
+            },
+        )
+        .unwrap();
+        db::set_scheduler_enabled(db_path, true).unwrap();
+        db::set_worker_enabled(db_path, true).unwrap();
+
+        let job = db::create_generation_job(
+            db_path,
+            CreateGenerationJobRequest {
+                prompt: "adapter lifecycle".into(),
+                model: Some("seedance-2.5".into()),
+                duration_seconds: Some(10),
+                ratio: Some("1:1".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(crate::worker::allocation_tick(db_path).unwrap(), 1);
+        db::get_generation_job(db_path, &job.id).unwrap().unwrap()
+    }
+
     #[test]
     fn local_api_health_and_generation_creation_work() {
         let (root, db_path) = temp_db();
@@ -339,6 +525,122 @@ mod tests {
         let jobs = db::list_generation_jobs(&db_path).unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].prompt, "test generation");
+
+        runtime.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adapter_http_lifecycle_completes_assigned_job() {
+        let (root, db_path) = temp_db();
+        let assigned = create_assigned_job(&root, &db_path);
+        let port = free_port();
+        let runtime = start(db_path.clone(), port).unwrap();
+        let api_key = db::get_local_api_settings(&db_path).unwrap().api_key;
+
+        let claim = post_json(
+            port,
+            "/v1/adapter/claim",
+            &api_key,
+            r#"{"workerId":"adapter-test","leaseSeconds":120}"#,
+        );
+        assert!(claim.starts_with("HTTP/1.1 200 OK"));
+        let claim_json: Value = serde_json::from_str(response_body(&claim)).unwrap();
+        let lease_token = claim_json["claim"]["leaseToken"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            claim_json["claim"]["job"]["id"].as_str(),
+            Some(assigned.id.as_str())
+        );
+
+        let start_body =
+            format!(r#"{{"leaseToken":"{lease_token}","externalTaskId":"seed-task-1"}}"#);
+        let started = post_json(
+            port,
+            &format!("/v1/adapter/jobs/{}/start", assigned.id),
+            &api_key,
+            &start_body,
+        );
+        assert!(started.contains("\"status\":\"starting\""));
+
+        let progress_body = format!(
+            r#"{{"leaseToken":"{lease_token}","externalTaskId":"seed-task-1","progressPercent":42}}"#
+        );
+        let progress = post_json(
+            port,
+            &format!("/v1/adapter/jobs/{}/progress", assigned.id),
+            &api_key,
+            &progress_body,
+        );
+        assert!(progress.contains("\"status\":\"generating\""));
+        assert!(progress.contains("\"progressPercent\":42"));
+
+        let complete_body = format!(
+            r#"{{"leaseToken":"{lease_token}","resultUrl":"https://example.test/result.mp4"}}"#
+        );
+        let completed = post_json(
+            port,
+            &format!("/v1/adapter/jobs/{}/complete", assigned.id),
+            &api_key,
+            &complete_body,
+        );
+        assert!(completed.contains("\"status\":\"completed\""));
+        assert!(completed.contains("\"progressPercent\":100"));
+
+        let stored = db::get_generation_job(&db_path, &assigned.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "completed");
+        assert_eq!(stored.attempt_count, 1);
+        assert_eq!(stored.progress_percent, 100);
+        assert!(stored.lease_owner.is_none());
+        assert_eq!(
+            stored.result_url.as_deref(),
+            Some("https://example.test/result.mp4")
+        );
+
+        runtime.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adapter_retryable_failure_requeues_job() {
+        let (root, db_path) = temp_db();
+        let assigned = create_assigned_job(&root, &db_path);
+        let port = free_port();
+        let runtime = start(db_path.clone(), port).unwrap();
+        let api_key = db::get_local_api_settings(&db_path).unwrap().api_key;
+
+        let claim = post_json(
+            port,
+            "/v1/adapter/claim",
+            &api_key,
+            r#"{"workerId":"adapter-retry","leaseSeconds":120}"#,
+        );
+        let claim_json: Value = serde_json::from_str(response_body(&claim)).unwrap();
+        let lease_token = claim_json["claim"]["leaseToken"].as_str().unwrap();
+
+        let fail_body = format!(
+            r#"{{"leaseToken":"{lease_token}","failureCode":"temporary","errorMessage":"retry me","retryable":true,"retryAfterSeconds":1}}"#
+        );
+        let failed = post_json(
+            port,
+            &format!("/v1/adapter/jobs/{}/fail", assigned.id),
+            &api_key,
+            &fail_body,
+        );
+        assert!(failed.contains("\"status\":\"queued\""));
+
+        let stored = db::get_generation_job(&db_path, &assigned.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, "queued");
+        assert_eq!(stored.attempt_count, 1);
+        assert!(stored.profile_id.is_none());
+        assert!(stored.lease_owner.is_none());
+        assert!(stored.next_retry_at.is_some());
 
         runtime.stop();
         let _ = fs::remove_dir_all(root);

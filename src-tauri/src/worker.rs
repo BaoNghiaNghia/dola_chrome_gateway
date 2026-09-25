@@ -47,7 +47,7 @@ pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
     });
 
     if ready_profiles.is_empty() {
-        if db::count_queued_jobs(db_path)? > 0 {
+        if !db::list_queued_generation_jobs(db_path, 1)?.is_empty() {
             return Err("No scheduler-ready profiles are available for queued jobs.".into());
         }
         db::record_worker_tick(db_path, None)?;

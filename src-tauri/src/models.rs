@@ -215,6 +215,11 @@ pub struct GenerationJob {
     pub error_message: Option<String>,
     pub deadline_at: Option<String>,
     pub last_poll_at: Option<String>,
+    pub progress_percent: u8,
+    pub attempt_count: u32,
+    pub lease_owner: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub next_retry_at: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -242,6 +247,71 @@ pub struct UpdateGenerationJobRequest {
     pub error_message: Option<String>,
     pub deadline_at: Option<String>,
     pub last_poll_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterClaimRequest {
+    pub worker_id: String,
+    pub lease_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterProfileContext {
+    pub id: String,
+    pub name: String,
+    pub profile_path: String,
+    pub active_proxy: Option<ActiveProxyAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterClaim {
+    pub lease_token: String,
+    pub lease_expires_at: String,
+    pub job: GenerationJob,
+    pub profile: AdapterProfileContext,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterHeartbeatRequest {
+    pub lease_token: String,
+    pub lease_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterStartRequest {
+    pub lease_token: String,
+    pub external_task_id: Option<String>,
+    pub deadline_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterProgressRequest {
+    pub lease_token: String,
+    pub external_task_id: Option<String>,
+    pub progress_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterCompleteRequest {
+    pub lease_token: String,
+    pub result_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterFailRequest {
+    pub lease_token: String,
+    pub failure_code: Option<String>,
+    pub error_message: Option<String>,
+    pub retryable: Option<bool>,
+    pub retry_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

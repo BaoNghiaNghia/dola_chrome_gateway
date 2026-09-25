@@ -156,6 +156,11 @@ export type GenerationJob = {
   errorMessage: string | null;
   deadlineAt: string | null;
   lastPollAt: string | null;
+  progressPercent: number;
+  attemptCount: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  nextRetryAt: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;

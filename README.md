@@ -43,7 +43,8 @@ npm start
 - Scheduler-ready profiles can be launched automatically with `Open Smart`; blocked profiles are skipped.
 - Persistent Seedance generation queue stored in SQLite with queued/assigned/starting/generating/recovering/completed/failed/cancelled states.
 - Interrupted generation jobs in `starting` or `generating` automatically return as `recovering` after an app restart.
-- Queue UI supports Seedance model, duration, aspect ratio, persistent job creation, status inspection, and cancellation. The website execution adapter is intentionally a separate next phase.
+- Queue UI supports Seedance model, duration, aspect ratio, persistent job creation, status inspection, cancellation, progress, attempts, lease ownership, and retry visibility.
+- A lease-based execution-adapter protocol lets a separate local Seedance adapter claim jobs, heartbeat, report progress, complete results, or fail/retry without coupling website automation to the Tauri core.
 
 ## Local API and allocation worker
 
@@ -57,6 +58,13 @@ GET  /v1/videos
 POST /v1/videos/generations
 GET  /v1/videos/{job_id}
 POST /v1/videos/{job_id}/cancel
+
+POST /v1/adapter/claim
+POST /v1/adapter/jobs/{job_id}/heartbeat
+POST /v1/adapter/jobs/{job_id}/start
+POST /v1/adapter/jobs/{job_id}/progress
+POST /v1/adapter/jobs/{job_id}/complete
+POST /v1/adapter/jobs/{job_id}/fail
 ```
 
 Example:
@@ -68,7 +76,9 @@ curl -X POST http://127.0.0.1:8787/v1/videos/generations ^
   -d "{\"prompt\":\"A handheld UGC video\",\"model\":\"seedance-2.5\",\"durationSeconds\":10,\"ratio\":\"1:1\"}"
 ```
 
-The allocation worker is disabled by default. When enabled, it requires Smart Scheduler to be ON and assigns queued jobs to Ready profiles using least-recently-used ordering. Its current mode is `allocation_only`: it reserves a profile and changes the job to `assigned`; automatic Seedance website submission/polling is intentionally handled by the next execution-adapter layer.
+The allocation worker is disabled by default. When enabled, it requires Smart Scheduler to be ON and assigns queued jobs to Ready profiles using least-recently-used ordering. Its current mode is `allocation_only`: it reserves a profile and changes the job to `assigned`.
+
+The adapter protocol uses short-lived per-job leases so two adapter processes cannot execute the same job concurrently. A claim returns a lease token plus assigned profile context. The adapter renews that lease with heartbeat calls, then reports `start`, `progress`, `complete`, or `fail`. Retryable failures are returned to the queue with a backoff and their profile assignment is cleared so the scheduler can select another Ready profile. Automatic Seedance website interaction itself remains isolated in the adapter layer.
 
 ## Stack
 
