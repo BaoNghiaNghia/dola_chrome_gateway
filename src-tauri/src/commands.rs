@@ -15,6 +15,7 @@ use crate::worker;
 use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tauri::State;
 
 const MAX_SIMULTANEOUS_PROFILES: usize = 4;
@@ -391,6 +392,60 @@ pub fn cancel_generation_job(
     state: State<'_, AppState>,
 ) -> Result<GenerationJob, String> {
     db::cancel_generation_job(&state.db_path, &job_id)
+}
+
+#[tauri::command]
+pub fn reveal_generation_result(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let job = db::get_generation_job(&state.db_path, &job_id)?
+        .ok_or_else(|| "Generation job not found.".to_string())?;
+    let local_path = job
+        .local_path
+        .as_deref()
+        .ok_or_else(|| "This generation does not have a downloaded local file.".to_string())?;
+
+    let downloads_dir = state.app_data_dir.join("downloads");
+    let canonical_downloads = std::fs::canonicalize(&downloads_dir)
+        .map_err(|e| format!("Cannot resolve managed downloads directory: {e}"))?;
+    let canonical_file = std::fs::canonicalize(local_path)
+        .map_err(|e| format!("Downloaded result file is unavailable: {e}"))?;
+
+    if !canonical_file.starts_with(&canonical_downloads) {
+        return Err(
+            "Only files inside the managed Dola Gateway downloads directory can be revealed."
+                .into(),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", canonical_file.display()))
+            .spawn()
+            .map_err(|e| format!("Cannot open File Explorer: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-R")
+            .arg(&canonical_file)
+            .spawn()
+            .map_err(|e| format!("Cannot reveal result in Finder: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let parent = canonical_file
+            .parent()
+            .ok_or_else(|| "Downloaded result has no parent directory.".to_string())?;
+        Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("Cannot open result directory: {e}"))?;
+        Ok(())
+    }
 }
 
 fn api_key_preview(api_key: &str) -> String {

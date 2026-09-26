@@ -151,6 +151,10 @@ export async function cancelGenerationJob(jobId: string): Promise<GenerationJob>
   return invoke<GenerationJob>("cancel_generation_job", { jobId });
 }
 
+export async function revealGenerationResult(jobId: string): Promise<void> {
+  return invoke("reveal_generation_result", { jobId });
+}
+
 export async function getLocalApiState(): Promise<LocalApiState> {
   if (!isTauri()) {
     return {

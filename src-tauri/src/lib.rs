@@ -89,6 +89,7 @@ pub fn run() {
             commands::create_generation_job,
             commands::update_generation_job,
             commands::cancel_generation_job,
+            commands::reveal_generation_result,
             commands::get_local_api_state,
             commands::set_local_api_enabled,
             commands::set_local_api_port,

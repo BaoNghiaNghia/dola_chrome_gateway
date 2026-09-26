@@ -23,6 +23,7 @@ import {
   listWorkspaces,
   openProfiles,
   openSmartProfiles,
+  revealGenerationResult,
   revealLocalApiKey,
   rotateLocalApiKey,
   rotateProxyPoolItem,
@@ -58,10 +59,42 @@ import profilesIcon from "./assets/profiles-icon.svg";
 import proxiesIcon from "./assets/proxies-icon.svg";
 import "./App.css";
 
-const SERVICES = ["Gmail", "Facebook", "Apple ID"];
 const MAX_SELECTED = 4;
 
 type View = "profiles" | "proxies" | "queue";
+type QueueFilter = "all" | "active" | "queued" | "completed" | "failed";
+type QueueSort = "newest" | "oldest" | "active";
+type ProfileDensity = "comfortable" | "compact";
+
+const UI_PREFS_KEY = "dola-gateway-ui-v1";
+
+type UiPreferences = {
+  view: View;
+  queueFilter: QueueFilter;
+  queueSort: QueueSort;
+  profileDensity: ProfileDensity;
+  workspacesOpen: boolean;
+  advancedRuntimeOpen: boolean;
+};
+
+const DEFAULT_UI_PREFS: UiPreferences = {
+  view: "profiles",
+  queueFilter: "all",
+  queueSort: "newest",
+  profileDensity: "comfortable",
+  workspacesOpen: false,
+  advancedRuntimeOpen: false,
+};
+
+function loadUiPreferences(): UiPreferences {
+  try {
+    const raw = window.localStorage.getItem(UI_PREFS_KEY);
+    if (!raw) return DEFAULT_UI_PREFS;
+    return { ...DEFAULT_UI_PREFS, ...JSON.parse(raw) } as UiPreferences;
+  } catch {
+    return DEFAULT_UI_PREFS;
+  }
+}
 
 const DEFAULT_PROXY_ITEM: ProxyPoolItemInput = {
   name: "",
@@ -111,22 +144,13 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
     name: "",
     email: "",
     groupName: "",
-    services: ["Gmail"],
+    services: [],
     tags: [],
     notes: "",
   });
   const [tags, setTags] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-
-  const toggleService = (service: string) => {
-    setForm((current) => ({
-      ...current,
-      services: current.services.includes(service)
-        ? current.services.filter((item) => item !== service)
-        : [...current.services, service],
-    }));
-  };
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -202,22 +226,6 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
               placeholder="US Store"
             />
           </label>
-        </div>
-
-        <div className="field-block">
-          <span className="field-label">Services</span>
-          <div className="service-picker">
-            {SERVICES.map((service) => (
-              <button
-                type="button"
-                key={service}
-                className={form.services.includes(service) ? "chip active" : "chip"}
-                onClick={() => toggleService(service)}
-              >
-                {service}
-              </button>
-            ))}
-          </div>
         </div>
 
         <label>
@@ -453,7 +461,7 @@ function ProxyForm({
 }
 
 function App() {
-  const [view, setView] = useState<View>("profiles");
+  const [view, setView] = useState<View>(() => loadUiPreferences().view);
   const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
@@ -520,6 +528,22 @@ function App() {
   const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null);
   const [showProxyForm, setShowProxyForm] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
+  const [queueQuery, setQueueQuery] = useState("");
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>(
+    () => loadUiPreferences().queueFilter,
+  );
+  const [queueSort, setQueueSort] = useState<QueueSort>(
+    () => loadUiPreferences().queueSort,
+  );
+  const [profileDensity, setProfileDensity] = useState<ProfileDensity>(
+    () => loadUiPreferences().profileDensity,
+  );
+  const [workspacesOpen, setWorkspacesOpen] = useState(
+    () => loadUiPreferences().workspacesOpen,
+  );
+  const [advancedRuntimeOpen, setAdvancedRuntimeOpen] = useState(
+    () => loadUiPreferences().advancedRuntimeOpen,
+  );
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<{
     kind: "error" | "success";
@@ -582,6 +606,28 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    window.localStorage.setItem(
+      UI_PREFS_KEY,
+      JSON.stringify({
+        view,
+        queueFilter,
+        queueSort,
+        profileDensity,
+        workspacesOpen,
+        advancedRuntimeOpen,
+      } satisfies UiPreferences),
+    );
+  }, [
+    view,
+    queueFilter,
+    queueSort,
+    profileDensity,
+    workspacesOpen,
+    advancedRuntimeOpen,
+  ]);
+
+
   const groups = useMemo(
     () => [
       "All",
@@ -610,7 +656,6 @@ function App() {
           profile.activeProxy?.publicIp,
           profile.activeProxy?.endpoint,
           ...profile.tags,
-          ...profile.services,
         ]
           .filter(Boolean)
           .some((value) => value!.toLowerCase().includes(needle));
@@ -634,6 +679,57 @@ function App() {
   ).length;
   const completedJobs = generationJobs.filter((job) => job.status === "completed").length;
   const failedJobs = generationJobs.filter((job) => job.status === "failed").length;
+  const needsLoginCount = profiles.filter(
+    (profile) => profile.operational.availability === "needs_login",
+  ).length;
+
+  const visibleJobs = useMemo(() => {
+    const needle = queueQuery.trim().toLowerCase();
+    const activeStatuses = new Set(["assigned", "starting", "generating", "recovering"]);
+
+    const filtered = generationJobs.filter((job) => {
+      const filterMatch =
+        queueFilter === "all" ||
+        (queueFilter === "active" && activeStatuses.has(job.status)) ||
+        job.status === queueFilter;
+      if (!filterMatch) return false;
+
+      if (!needle) return true;
+      const assignedProfile = job.profileId
+        ? profiles.find((profile) => profile.id === job.profileId)
+        : null;
+      return [
+        job.id,
+        job.prompt,
+        job.model,
+        job.status,
+        assignedProfile?.name,
+        job.externalTaskId,
+        job.localPath,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle));
+    });
+
+    return filtered.sort((a, b) => {
+      if (queueSort === "oldest") {
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
+      if (queueSort === "active") {
+        const rank = (job: GenerationJob) =>
+          activeStatuses.has(job.status)
+            ? 0
+            : job.status === "queued"
+              ? 1
+              : job.status === "failed"
+                ? 2
+                : 3;
+        const diff = rank(a) - rank(b);
+        if (diff !== 0) return diff;
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [generationJobs, profiles, queueFilter, queueQuery, queueSort]);
 
   function toggleSelected(id: string) {
     setBanner(null);
@@ -770,6 +866,30 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function copyText(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setBanner({ kind: "success", text: `${label} copied.` });
+    } catch {
+      setBanner({ kind: "error", text: `Could not copy ${label.toLowerCase()}.` });
+    }
+  }
+
+  async function retryGenerationJob(job: GenerationJob) {
+    await perform(
+      () =>
+        createGenerationJob({
+          prompt: job.prompt,
+          model: job.model,
+          durationSeconds: job.durationSeconds,
+          ratio: job.ratio,
+        }),
+      "Generation retry queued as a new job.",
+    );
+    setView("queue");
+    setQueueFilter("queued");
   }
 
   async function toggleAutomationRuntime(enabled: boolean) {
@@ -1007,41 +1127,62 @@ function App() {
             <b>{queuedJobs + activeJobs}</b>
           </button>
 
-          <div className="nav-caption">WORKSPACES</div>
-          {workspaces.length === 0 ? (
-            <p className="sidebar-empty">
-              Select profiles and save your first workspace.
-            </p>
-          ) : (
-            workspaces.map((workspace) => (
-              <div className="workspace-row" key={workspace.id}>
-                <button
-                  className="workspace-open"
-                  onClick={() =>
-                    perform(
-                      () => openProfiles(workspace.profileIds),
-                      `${workspace.name} opened.`,
-                    )
-                  }
-                  disabled={busy}
-                  title="Open workspace"
-                >
-                  <span className="workspace-dot" />
-                  <span>
-                    {workspace.name}
-                    <small>{workspace.profileIds.length} profiles</small>
-                  </span>
-                </button>
-                <button
-                  className="workspace-delete"
-                  aria-label={`Delete ${workspace.name}`}
-                  onClick={() => perform(() => deleteWorkspace(workspace.id))}
-                >
-                  ×
-                </button>
-              </div>
-            ))
-          )}
+          <details
+            className="sidebar-workspaces"
+            open={workspacesOpen}
+            onToggle={(event) =>
+              setWorkspacesOpen((event.currentTarget as HTMLDetailsElement).open)
+            }
+          >
+            <summary>
+              <span>Workspaces</span>
+              <b>{workspaces.length}</b>
+            </summary>
+            <div className="sidebar-workspace-body">
+              {workspaces.length === 0 ? (
+                <p className="sidebar-empty">
+                  Select profiles and save a workspace when you need a reusable batch.
+                </p>
+              ) : (
+                workspaces.map((workspace) => (
+                  <div className="workspace-row" key={workspace.id}>
+                    <button
+                      className="workspace-open"
+                      onClick={() =>
+                        perform(
+                          () => openProfiles(workspace.profileIds),
+                          `${workspace.name} opened.`,
+                        )
+                      }
+                      disabled={busy}
+                      title="Open workspace"
+                    >
+                      <span className="workspace-dot" />
+                      <span>
+                        {workspace.name}
+                        <small>{workspace.profileIds.length} profiles</small>
+                      </span>
+                    </button>
+                    <button
+                      className="workspace-delete"
+                      aria-label={`Delete ${workspace.name}`}
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Delete workspace "${workspace.name}"? Profiles will not be deleted.`,
+                          )
+                        ) {
+                          void perform(() => deleteWorkspace(workspace.id));
+                        }
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </details>
         </nav>
 
         <div className="sidebar-status">
@@ -1064,10 +1205,10 @@ function App() {
           <>
             <header className="topbar">
               <div>
-                <span className="eyebrow">LOCAL BROWSER CONTROL</span>
+                <span className="eyebrow">DOLA SESSIONS</span>
                 <h1>Profiles</h1>
                 <p>
-                  Persistent sessions with optional system-wide rotating proxy pool.
+                  Persistent Dola login sessions with optional rotating proxy routing.
                 </p>
               </div>
               <button className="button primary" onClick={() => setShowCreate(true)}>
@@ -1101,57 +1242,43 @@ function App() {
                     : "Direct connection for new launches"}
                 </small>
               </div>
-              <div className="stat-card system-card">
-                <span>Chrome</span>
-                <strong>{system?.chromePath ? "Ready" : "Check setup"}</strong>
-                <small>
-                  {system?.chromePath ? "Executable found" : "Executable not found"}
-                </small>
+              <div className="stat-card">
+                <span>Ready profiles</span>
+                <strong>{scheduler.readyProfiles}</strong>
+                <small>{scheduler.blockedProfiles} blocked from automation</small>
               </div>
             </section>
 
-            <section className="scheduler-card">
-              <div className="scheduler-copy">
-                <span className="eyebrow">SMART PROFILE POOL</span>
-                <h3>{scheduler.enabled ? "Smart Scheduler enabled" : "Smart Scheduler disabled"}</h3>
-                <p>
-                  Ready profiles are selected by least-recently-used order. Profiles in
-                  cooldown, rate limit, quota block, disabled scheduling, or need-login
-                  state are skipped automatically.
-                </p>
-              </div>
-              <div className="scheduler-summary">
+            <details className="scheduler-advanced-card">
+              <summary>
+                <span>Advanced scheduler settings</span>
+                <small>
+                  {automationRuntime.running
+                    ? "Managed by Automation Runtime"
+                    : scheduler.enabled
+                      ? "Scheduler ON"
+                      : "Scheduler OFF"}
+                </small>
+              </summary>
+              <div className="scheduler-advanced-body">
                 <div>
-                  <span>Ready</span>
-                  <strong>{scheduler.readyProfiles}</strong>
+                  <strong>Smart Scheduler</strong>
+                  <p>
+                    Uses Ready profiles in least-recently-used order and skips blocked,
+                    cooldown, quota-limited or login-required profiles.
+                  </p>
                 </div>
-                <div>
-                  <span>Blocked</span>
-                  <strong>{scheduler.blockedProfiles}</strong>
-                </div>
-                <button
-                  className="button secondary scheduler-open"
-                  disabled={!scheduler.enabled || scheduler.readyProfiles === 0 || busy}
-                  onClick={() =>
-                    perform(
-                      () => openSmartProfiles(MAX_SELECTED),
-                      "Smart Scheduler opened available Ready profiles.",
-                    )
-                  }
-                >
-                  ▶ Open Smart
-                </button>
                 <label className="master-toggle scheduler-toggle" title="Enable Smart Scheduler">
                   <input
                     type="checkbox"
                     checked={scheduler.enabled}
-                    disabled={busy}
+                    disabled={busy || automationRuntime.running}
                     onChange={(event) => void toggleScheduler(event.target.checked)}
                   />
                   <span />
                 </label>
               </div>
-            </section>
+            </details>
 
             <section className="panel">
               <div className="toolbar">
@@ -1171,7 +1298,32 @@ function App() {
                     <option key={item}>{item}</option>
                   ))}
                 </select>
+                <button
+                  className={profileDensity === "compact" ? "density-button active" : "density-button"}
+                  type="button"
+                  aria-pressed={profileDensity === "compact"}
+                  onClick={() =>
+                    setProfileDensity((current) =>
+                      current === "compact" ? "comfortable" : "compact",
+                    )
+                  }
+                  title="Toggle compact profile rows"
+                >
+                  {profileDensity === "compact" ? "Compact" : "Comfort"}
+                </button>
                 <div className="toolbar-spacer" />
+                <button
+                  className="button secondary"
+                  disabled={!scheduler.enabled || scheduler.readyProfiles === 0 || busy}
+                  onClick={() =>
+                    perform(
+                      () => openSmartProfiles(MAX_SELECTED),
+                      "Ready profiles opened.",
+                    )
+                  }
+                >
+                  ▶ Open ready
+                </button>
                 <span className="selected-count">
                   {selected.length} / {MAX_SELECTED} selected
                 </span>
@@ -1197,7 +1349,7 @@ function App() {
                   <input
                     value={workspaceName}
                     onChange={(event) => setWorkspaceName(event.target.value)}
-                    placeholder="e.g. Facebook Team A"
+                    placeholder="e.g. Seedance Batch A"
                   />
                   <button
                     className="button secondary"
@@ -1212,7 +1364,6 @@ function App() {
               <div className="table-head">
                 <span />
                 <span>Profile</span>
-                <span>Services</span>
                 <span>Proxy</span>
                 <span>Health</span>
                 <span>Group</span>
@@ -1221,7 +1372,7 @@ function App() {
                 <span />
               </div>
 
-              <div className="profile-list">
+              <div className={`profile-list ${profileDensity === "compact" ? "compact" : ""}`}>
                 {visibleProfiles.length === 0 ? (
                   <div className="empty-state">
                     <div className="empty-icon">◫</div>
@@ -1271,18 +1422,6 @@ function App() {
                           </div>
                         </div>
 
-                        <div className="services">
-                          {profile.services.length ? (
-                            profile.services.map((service) => (
-                              <span className="service-badge" key={service}>
-                                {service}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="muted">—</span>
-                          )}
-                        </div>
-
                         <div
                           className={`proxy-pill ${profileProxyClass(profile)}`}
                           title={
@@ -1305,58 +1444,6 @@ function App() {
                           >
                             {availabilityLabel(profile)}
                           </span>
-                          {!profile.isRunning &&
-                            ["unknown", "needs_login"].includes(
-                              profile.operational.availability,
-                            ) && (
-                              <button
-                                className="health-inline-action"
-                                disabled={busy}
-                                onClick={() => void markSessionHealthy(profile)}
-                              >
-                                Mark OK
-                              </button>
-                            )}
-                          {!profile.isRunning &&
-                            ["cooldown", "rate_limited", "quota_blocked"].includes(
-                              profile.operational.availability,
-                            ) && (
-                              <button
-                                className="health-inline-action"
-                                disabled={busy}
-                                onClick={() => void clearProfileBlocks(profile)}
-                              >
-                                Clear
-                              </button>
-                            )}
-                          {!profile.isRunning &&
-                            profile.operational.availability === "disabled" && (
-                              <button
-                                className="health-inline-action"
-                                disabled={busy}
-                                onClick={() =>
-                                  perform(
-                                    () =>
-                                      updateProfileOperationalState(profile.id, {
-                                        schedulingEnabled: true,
-                                      }),
-                                    `${profile.name} scheduling enabled.`,
-                                  )
-                                }
-                              >
-                                Enable
-                              </button>
-                            )}
-                          {!profile.isRunning &&
-                            profile.operational.availability === "ready" && (
-                              <button
-                                className="health-inline-action health-warning-action"
-                                disabled={busy}
-                                onClick={() => void markNeedsLogin(profile)}
-                              >
-                                Need login
-                              </button>
-                            )}
                         </div>
 
                         <span>{profile.groupName || "—"}</span>
@@ -1406,18 +1493,82 @@ function App() {
                               Open
                             </button>
                           )}
-                          <button
-                            className="dots-button"
-                            title="Remove manager entry"
-                            onClick={() =>
-                              perform(
-                                () => deleteProfile(profile.id),
-                                "Profile entry removed. Session data was kept on disk.",
-                              )
-                            }
-                          >
-                            ⋯
-                          </button>
+                          <details className="profile-action-menu">
+                            <summary
+                              className="dots-button"
+                              aria-label={`More actions for ${profile.name}`}
+                            >
+                              ⋯
+                            </summary>
+                            <div className="profile-action-popover">
+                              {!profile.isRunning &&
+                                ["unknown", "needs_login"].includes(
+                                  profile.operational.availability,
+                                ) && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void markSessionHealthy(profile)}
+                                  >
+                                    Mark session healthy
+                                  </button>
+                                )}
+                              {!profile.isRunning &&
+                                profile.operational.availability === "ready" && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void markNeedsLogin(profile)}
+                                  >
+                                    Mark as need login
+                                  </button>
+                                )}
+                              {!profile.isRunning &&
+                                ["cooldown", "rate_limited", "quota_blocked"].includes(
+                                  profile.operational.availability,
+                                ) && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void clearProfileBlocks(profile)}
+                                  >
+                                    Clear availability blocks
+                                  </button>
+                                )}
+                              {!profile.isRunning &&
+                                profile.operational.availability === "disabled" && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() =>
+                                      void perform(
+                                        () =>
+                                          updateProfileOperationalState(profile.id, {
+                                            schedulingEnabled: true,
+                                          }),
+                                        `${profile.name} scheduling enabled.`,
+                                      )
+                                    }
+                                  >
+                                    Enable scheduling
+                                  </button>
+                                )}
+                              <button
+                                className="danger-item"
+                                disabled={busy}
+                                onClick={() => {
+                                  if (
+                                    window.confirm(
+                                      `Remove "${profile.name}" from Dola Gateway? Chrome session data will stay on disk.`,
+                                    )
+                                  ) {
+                                    void perform(
+                                      () => deleteProfile(profile.id),
+                                      "Profile entry removed. Session data was kept on disk.",
+                                    );
+                                  }
+                                }}
+                              >
+                                Remove from manager
+                              </button>
+                            </div>
+                          </details>
                         </div>
                       </article>
                     );
@@ -1426,9 +1577,11 @@ function App() {
               </div>
             </section>
 
-            <footer className="data-path">
-              Session data stays on this PC ·{" "}
-              {system?.dataDir ?? "Loading data path…"}
+            <footer
+              className="data-path"
+              title={system?.dataDir ?? undefined}
+            >
+              Session data stays on this PC.
             </footer>
           </>
         ) : view === "proxies" ? (
@@ -1510,9 +1663,7 @@ function App() {
                     together.
                   </span>
                 </div>
-                <span className={proxyPool.enabled ? "pool-badge on" : "pool-badge"}>
-                  {proxyPool.enabled ? "SYSTEM ON" : "SYSTEM OFF"}
-                </span>
+
               </div>
 
               <div className="proxy-table-head">
@@ -1624,12 +1775,14 @@ function App() {
                             className="dots-button proxy-delete-button"
                             title="Delete proxy"
                             disabled={busy || inUse}
-                            onClick={() =>
-                              perform(
-                                () => deleteProxyPoolItem(item.id),
-                                `${item.name} removed from Proxy Pool.`,
-                              )
-                            }
+                            onClick={() => {
+                              if (window.confirm(`Delete proxy "${item.name}"?`)) {
+                                void perform(
+                                  () => deleteProxyPoolItem(item.id),
+                                  `${item.name} removed from Proxy Pool.`,
+                                );
+                              }
+                            }}
                           >
                             ×
                           </button>
@@ -1648,8 +1801,7 @@ function App() {
                 <span className="eyebrow">SEEDANCE OPERATIONS</span>
                 <h1>Generation Queue</h1>
                 <p>
-                  Persistent jobs survive app restarts and are ready for the Seedance
-                  execution adapter.
+                  Create, run and monitor Seedance generations across Ready profiles.
                 </p>
               </div>
               <button
@@ -1696,15 +1848,20 @@ function App() {
               </div>
 
               <div className="automation-dependencies">
-                <span className={scheduler.enabled ? "dependency-chip on" : "dependency-chip"}>
-                  Scheduler {scheduler.enabled ? "ON" : "OFF"}
+                <span className={scheduler.readyProfiles > 0 ? "dependency-chip on" : "dependency-chip"}>
+                  {scheduler.readyProfiles} Ready profile{scheduler.readyProfiles === 1 ? "" : "s"}
                 </span>
-                <span className={localApi.running ? "dependency-chip on" : "dependency-chip"}>
-                  Local API {localApi.running ? "ON" : "OFF"}
+                <span className={activeJobs > 0 ? "dependency-chip on" : "dependency-chip"}>
+                  {activeJobs} active
                 </span>
-                <span className={workerState.running ? "dependency-chip on" : "dependency-chip"}>
-                  Allocator {workerState.running ? "ON" : "OFF"}
+                <span className={queuedJobs > 0 ? "dependency-chip on" : "dependency-chip"}>
+                  {queuedJobs} queued
                 </span>
+                {needsLoginCount > 0 && (
+                  <span className="dependency-chip error">
+                    {needsLoginCount} need login
+                  </span>
+                )}
                 <span className={automationRuntime.nodePath ? "dependency-chip on" : "dependency-chip error"}>
                   Node {automationRuntime.nodePath ? "READY" : "MISSING"}
                 </span>
@@ -1781,22 +1938,25 @@ function App() {
                 </button>
               </div>
 
-              <div className="automation-meta">
-                <div>
-                  <span>PID</span>
-                  <strong>{automationRuntime.pid ?? "—"}</strong>
+              <details className="automation-technical-details">
+                <summary>Runtime details</summary>
+                <div className="automation-meta">
+                  <div>
+                    <span>PID</span>
+                    <strong>{automationRuntime.pid ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Started</span>
+                    <strong>{relativeTime(automationRuntime.startedAt)}</strong>
+                  </div>
+                  <div className="automation-path">
+                    <span>Adapter</span>
+                    <code title={automationRuntime.scriptPath ?? undefined}>
+                      {automationRuntime.scriptPath ?? "Resource unavailable"}
+                    </code>
+                  </div>
                 </div>
-                <div>
-                  <span>Started</span>
-                  <strong>{relativeTime(automationRuntime.startedAt)}</strong>
-                </div>
-                <div className="automation-path">
-                  <span>Adapter</span>
-                  <code title={automationRuntime.scriptPath ?? undefined}>
-                    {automationRuntime.scriptPath ?? "Resource unavailable"}
-                  </code>
-                </div>
-              </div>
+              </details>
 
               {automationRuntime.lastError && (
                 <div className="runtime-error">{automationRuntime.lastError}</div>
@@ -1839,7 +1999,18 @@ function App() {
               )}
             </section>
 
-            <section className="runtime-grid">
+            <details
+              className="advanced-runtime-details"
+              open={advancedRuntimeOpen}
+              onToggle={(event) =>
+                setAdvancedRuntimeOpen((event.currentTarget as HTMLDetailsElement).open)
+              }
+            >
+              <summary>
+                <span>Advanced runtime controls</span>
+                <small>Local API · Allocator · API key</small>
+              </summary>
+              <section className="runtime-grid">
               <article className="runtime-card">
                 <div className="runtime-card-head">
                   <div>
@@ -1971,43 +2142,8 @@ function App() {
                   </label>
                 </div>
               </article>
-            </section>
-
-            <section className="queue-foundation-card">
-              <div>
-                <span className="eyebrow">PERSISTENT ORCHESTRATION</span>
-                <h3>Queue foundation active</h3>
-                <p>
-                  Jobs are stored in SQLite, assigned to Ready profiles and executed
-                  through the managed Seedance adapter. Lease recovery, profile health
-                  feedback and browser-session reuse keep interrupted jobs recoverable.
-                </p>
-              </div>
-              <div className="queue-ready-chip">RECOVERY READY</div>
-            </section>
-
-            <section className="stats-grid queue-stats">
-              <div className="stat-card">
-                <span>Queued</span>
-                <strong>{queuedJobs}</strong>
-                <small>Waiting for execution</small>
-              </div>
-              <div className="stat-card">
-                <span>Active / Recovering</span>
-                <strong>{activeJobs}</strong>
-                <small>Worker-owned jobs</small>
-              </div>
-              <div className="stat-card">
-                <span>Completed</span>
-                <strong>{completedJobs}</strong>
-                <small>Finished generations</small>
-              </div>
-              <div className="stat-card">
-                <span>Failed</span>
-                <strong>{failedJobs}</strong>
-                <small>Needs review or retry</small>
-              </div>
-            </section>
+              </section>
+            </details>
 
             {showJobForm && (
               <form className="queue-create-card" onSubmit={submitGenerationJob}>
@@ -2015,8 +2151,8 @@ function App() {
                   <div>
                     <strong>Queue Seedance job</strong>
                     <span>
-                      This creates a persistent job record. When the allocation worker
-                      is enabled, it can assign the job to a Ready profile automatically.
+                      Jobs start automatically when Automation Runtime is running and a
+                      Ready profile is available.
                     </span>
                   </div>
                   <button
@@ -2103,11 +2239,49 @@ function App() {
             )}
 
             <section className="panel queue-panel">
-              <div className="queue-panel-head">
+              <div className="queue-panel-head queue-panel-head-rich">
                 <div>
                   <strong>Generation jobs</strong>
-                  <span>{generationJobs.length} total persistent job(s)</span>
+                  <span>
+                    {visibleJobs.length} shown · {generationJobs.length} total
+                  </span>
                 </div>
+                <div className="queue-search-box">
+                  <span>⌕</span>
+                  <input
+                    value={queueQuery}
+                    onChange={(event) => setQueueQuery(event.target.value)}
+                    placeholder="Search jobs, prompt, profile…"
+                  />
+                </div>
+                <select
+                  className="queue-sort-select"
+                  value={queueSort}
+                  onChange={(event) => setQueueSort(event.target.value as QueueSort)}
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="active">Active first</option>
+                </select>
+              </div>
+              <div className="queue-filter-bar">
+                {([
+                  ["all", "All", generationJobs.length],
+                  ["active", "Active", activeJobs],
+                  ["queued", "Queued", queuedJobs],
+                  ["completed", "Completed", completedJobs],
+                  ["failed", "Failed", failedJobs],
+                ] as const).map(([value, label, count]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={queueFilter === value ? "queue-filter active" : "queue-filter"}
+                    onClick={() => setQueueFilter(value)}
+                  >
+                    {label}
+                    <b>{count}</b>
+                  </button>
+                ))}
               </div>
 
               {generationJobs.length === 0 ? (
@@ -2117,8 +2291,8 @@ function App() {
                   </div>
                   <h3>No generation jobs yet</h3>
                   <p>
-                    Create a job now to validate the persistent queue workflow before
-                    the Seedance execution adapter is connected.
+                    Queue a Seedance generation. Automation Runtime will assign a Ready
+                    profile, run it, and download the completed video automatically.
                   </p>
                   <button
                     className="button primary"
@@ -2127,9 +2301,23 @@ function App() {
                     Create first job
                   </button>
                 </div>
+              ) : visibleJobs.length === 0 ? (
+                <div className="empty-state queue-empty filtered">
+                  <h3>No matching jobs</h3>
+                  <p>Change the status filter, sort order, or search query.</p>
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setQueueFilter("all");
+                      setQueueQuery("");
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
               ) : (
                 <div className="job-list">
-                  {generationJobs.map((job) => {
+                  {visibleJobs.map((job) => {
                     const assignedProfile = job.profileId
                       ? profiles.find((profile) => profile.id === job.profileId)
                       : null;
@@ -2144,14 +2332,13 @@ function App() {
                           </span>
                           <strong>{job.prompt}</strong>
                           <small>
-                            {job.model} · {job.durationSeconds}s · {job.ratio} · attempt {job.attemptCount}
+                            {job.model} · {job.durationSeconds}s · {job.ratio}
                           </small>
                           <div className="job-progress-track" aria-label={`Progress ${job.progressPercent}%`}>
                             <span style={{ width: `${job.progressPercent}%` }} />
                           </div>
                           <div className="job-meta-inline">
                             <span>{job.progressPercent}%</span>
-                            {job.leaseOwner && <span>lease: {job.leaseOwner}</span>}
                             {job.nextRetryAt && (
                               <span>retry {relativeTime(job.nextRetryAt)}</span>
                             )}
@@ -2177,15 +2364,20 @@ function App() {
                                   Original · no-watermark priority
                                 </span>
                               )}
-                              {job.resultSourceKind && (
-                                <span className="result-quality-badge">
-                                  {job.resultSourceKind}
-                                </span>
-                              )}
                               {job.resultFileSize && (
                                 <span>
                                   {(job.resultFileSize / 1024 / 1024).toFixed(1)} MB
                                 </span>
+                              )}
+                            </div>
+                          )}
+                          <details className="job-technical-details">
+                            <summary>Details</summary>
+                            <div className="job-technical-body">
+                              <span>Attempt {job.attemptCount}</span>
+                              {job.leaseOwner && <span>Lease {job.leaseOwner}</span>}
+                              {job.resultSourceKind && (
+                                <span>Source {job.resultSourceKind}</span>
                               )}
                               {job.resultBitrate && (
                                 <span>
@@ -2196,7 +2388,7 @@ function App() {
                                 <code title={job.localPath}>{job.localPath}</code>
                               )}
                             </div>
-                          )}
+                          </details>
                         </div>
                         <div className="job-assignment">
                           <span>Profile</span>
@@ -2208,20 +2400,56 @@ function App() {
                         </div>
                         <div className="job-actions">
                           {job.resultUrl && (
-                            <span className="job-result-ready">Result ready</span>
+                            <span className="job-result-ready">
+                              {job.localPath ? "Downloaded" : "Result ready"}
+                            </span>
                           )}
-                          <button
-                            className="mini-button danger"
-                            disabled={busy || terminal}
-                            onClick={() =>
-                              perform(
-                                () => cancelGenerationJob(job.id),
-                                "Generation job cancelled.",
-                              )
-                            }
-                          >
-                            Cancel
-                          </button>
+                          {job.status === "completed" && job.resultUrl && (
+                            <button
+                              className="mini-button"
+                              disabled={busy}
+                              onClick={() => void copyText(job.resultUrl!, "Result URL")}
+                            >
+                              Copy URL
+                            </button>
+                          )}
+                          {job.status === "completed" && job.localPath && (
+                            <button
+                              className="mini-button"
+                              disabled={busy}
+                              onClick={() =>
+                                void perform(
+                                  () => revealGenerationResult(job.id),
+                                  "Opened the managed downloads folder.",
+                                )
+                              }
+                            >
+                              Show folder
+                            </button>
+                          )}
+                          {terminal && (
+                            <button
+                              className="mini-button"
+                              disabled={busy}
+                              onClick={() => void retryGenerationJob(job)}
+                            >
+                              Retry
+                            </button>
+                          )}
+                          {!terminal && (
+                            <button
+                              className="mini-button danger"
+                              disabled={busy}
+                              onClick={() =>
+                                perform(
+                                  () => cancelGenerationJob(job.id),
+                                  "Generation job cancelled.",
+                                )
+                              }
+                            >
+                              Cancel
+                            </button>
+                          )}
                         </div>
                       </article>
                     );
