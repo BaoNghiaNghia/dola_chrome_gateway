@@ -911,8 +911,11 @@ function App() {
       if (showAutomationLog) {
         setAutomationLog(await getAutomationRuntimeLog());
       }
-    } catch (error) {
-      setBanner({ kind: "error", text: errorMessage(error) });
+    } catch {
+      setBanner({
+        kind: "error",
+        text: "Automation Runtime could not start. See the runtime error below or open View logs for details.",
+      });
       await refresh();
     } finally {
       setBusy(false);

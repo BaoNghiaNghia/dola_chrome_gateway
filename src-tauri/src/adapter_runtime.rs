@@ -6,6 +6,34 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+const NODE_ADAPTER_BOOTSTRAP: &str = r#"
+const { pathToFileURL } = require('node:url');
+const entrypoint = process.argv[1];
+if (!entrypoint) {
+  console.error('Missing Seedance adapter entrypoint.');
+  process.exit(2);
+}
+import(pathToFileURL(entrypoint).href).catch((error) => {
+  console.error(error?.stack || error);
+  process.exit(1);
+});
+"#;
+
+fn node_compatible_path(path: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let raw = path.to_string_lossy();
+        if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = raw.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+
+    path.to_path_buf()
+}
+
 #[derive(Debug, Clone)]
 pub struct AdapterRuntimeConfig {
     pub concurrency: u8,
@@ -164,14 +192,19 @@ pub fn start(
         .try_clone()
         .map_err(|e| format!("Cannot clone adapter log handle: {e}"))?;
 
+    let node_script_path = node_compatible_path(&script_path);
+    let node_working_dir = node_compatible_path(
+        script_path
+            .parent()
+            .ok_or_else(|| "Adapter script directory is invalid.".to_string())?,
+    );
+
     let mut command = Command::new(&node_path);
     command
-        .arg(&script_path)
-        .current_dir(
-            script_path
-                .parent()
-                .ok_or_else(|| "Adapter script directory is invalid.".to_string())?,
-        )
+        .arg("-e")
+        .arg(NODE_ADAPTER_BOOTSTRAP)
+        .arg(&node_script_path)
+        .current_dir(&node_working_dir)
         .env("DOLA_GATEWAY_URL", gateway_url)
         .env("DOLA_GATEWAY_KEY", api_key)
         .env("DOLA_DOWNLOAD_DIR", &download_dir)
@@ -209,7 +242,9 @@ pub fn start(
     {
         let tail = read_log_tail(&log_path, 8_000).unwrap_or_default();
         return Err(format!(
-            "Seedance adapter exited immediately with {status}. {}",
+            "Seedance adapter exited immediately with {status}. Node: {}. Entrypoint: {}. {}",
+            node_path.display(),
+            node_script_path.display(),
             tail.trim()
         ));
     }
@@ -284,6 +319,49 @@ mod tests {
         runtime.stop().unwrap();
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn starts_real_workspace_adapter_entrypoint_when_available() {
+        if find_node_executable().is_none() {
+            return;
+        }
+
+        let Ok(workspace_root) = std::env::current_dir() else {
+            return;
+        };
+        if !workspace_root
+            .join("adapter")
+            .join("seedance-adapter.mjs")
+            .is_file()
+        {
+            return;
+        }
+
+        let app_data_dir =
+            std::env::temp_dir().join(format!("dola-adapter-workspace-{}", Uuid::new_v4()));
+        fs::create_dir_all(&app_data_dir).unwrap();
+
+        let config = AdapterRuntimeConfig::default();
+        let mut runtime = start(
+            &workspace_root,
+            &app_data_dir,
+            "http://127.0.0.1:1",
+            "test-key",
+            &config,
+        )
+        .unwrap();
+
+        assert!(runtime.pid() > 0);
+        assert!(runtime.is_running());
+        runtime.stop().unwrap();
+
+        let log = read_log_tail(&app_data_dir.join("logs").join("seedance-adapter.log"), 16_000)
+            .unwrap_or_default();
+        assert!(!log.contains("EISDIR"));
+        assert!(!log.contains("resolveMainPath"));
+
+        let _ = fs::remove_dir_all(app_data_dir);
     }
 
     #[test]
