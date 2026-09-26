@@ -11,6 +11,8 @@ import {
   deleteProfile,
   deleteProxyPoolItem,
   deleteWorkspace,
+  getAutomationRuntimeLog,
+  getAutomationRuntimeState,
   getLocalApiState,
   getProxyPoolState,
   getSchedulerState,
@@ -25,16 +27,19 @@ import {
   rotateLocalApiKey,
   rotateProxyPoolItem,
   runWorkerTick,
+  setAutomationRuntimeEnabled,
   setLocalApiEnabled,
   setLocalApiPort,
   setProxyPoolEnabled,
   setSchedulerEnabled,
   setWorkerEnabled,
   testProxyPoolItem,
+  updateAutomationRuntimeConfig,
   updateProfileOperationalState,
   updateProxyPoolItem,
 } from "./api";
 import type {
+  AutomationRuntimeState,
   BrowserProfile,
   CreateGenerationJobInput,
   CreateProfileInput,
@@ -480,6 +485,25 @@ function App() {
     lastTickAt: null,
     lastError: null,
   });
+  const [automationRuntime, setAutomationRuntime] = useState<AutomationRuntimeState>({
+    running: false,
+    pid: null,
+    concurrency: 1,
+    timeoutSeconds: 1200,
+    manualVerificationSeconds: 180,
+    nodePath: null,
+    scriptPath: null,
+    logPath: null,
+    startedAt: null,
+    lastError: null,
+  });
+  const [automationDraft, setAutomationDraft] = useState({
+    concurrency: 1,
+    timeoutSeconds: 1200,
+    manualVerificationSeconds: 180,
+  });
+  const [automationLog, setAutomationLog] = useState("");
+  const [showAutomationLog, setShowAutomationLog] = useState(false);
   const [revealedApiKey, setRevealedApiKey] = useState("");
   const [apiPortDraft, setApiPortDraft] = useState("8787");
   const [showJobForm, setShowJobForm] = useState(false);
@@ -513,6 +537,7 @@ function App() {
         nextJobs,
         nextLocalApi,
         nextWorker,
+        nextAutomation,
       ] = await Promise.all([
         listProfiles(),
         listWorkspaces(),
@@ -522,6 +547,7 @@ function App() {
         listGenerationJobs(),
         getLocalApiState(),
         getWorkerState(),
+        getAutomationRuntimeState(),
       ]);
       setProfiles(nextProfiles);
       setWorkspaces(nextWorkspaces);
@@ -532,6 +558,14 @@ function App() {
       setLocalApi(nextLocalApi);
       setApiPortDraft(String(nextLocalApi.port));
       setWorkerState(nextWorker);
+      setAutomationRuntime(nextAutomation);
+      if (!nextAutomation.running) {
+        setAutomationDraft({
+          concurrency: nextAutomation.concurrency,
+          timeoutSeconds: nextAutomation.timeoutSeconds,
+          manualVerificationSeconds: nextAutomation.manualVerificationSeconds,
+        });
+      }
       setSelected((current) =>
         current.filter((id) =>
           nextProfiles.some((profile) => profile.id === id),
@@ -731,6 +765,78 @@ function App() {
         text: "Generation job queued persistently.",
       });
       await refresh();
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleAutomationRuntime(enabled: boolean) {
+    setBusy(true);
+    setBanner(null);
+    try {
+      const next = await setAutomationRuntimeEnabled(enabled);
+      setAutomationRuntime(next);
+      if (!enabled) {
+        setRevealedApiKey("");
+      }
+      setBanner({
+        kind: "success",
+        text: enabled
+          ? "Automation Runtime started. Scheduler, Local API, allocator and Seedance adapter are active."
+          : "Automation Runtime stopped. Adapter, allocator and Local API are off.",
+      });
+      await refresh();
+      if (showAutomationLog) {
+        setAutomationLog(await getAutomationRuntimeLog());
+      }
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAutomationConfig() {
+    if (
+      !Number.isInteger(automationDraft.concurrency) ||
+      automationDraft.concurrency < 1 ||
+      automationDraft.concurrency > 4
+    ) {
+      setBanner({ kind: "error", text: "Adapter concurrency must be between 1 and 4." });
+      return;
+    }
+
+    setBusy(true);
+    setBanner(null);
+    try {
+      const next = await updateAutomationRuntimeConfig({
+        concurrency: automationDraft.concurrency,
+        timeoutSeconds: automationDraft.timeoutSeconds,
+        manualVerificationSeconds: automationDraft.manualVerificationSeconds,
+      });
+      setAutomationRuntime(next);
+      setAutomationDraft({
+        concurrency: next.concurrency,
+        timeoutSeconds: next.timeoutSeconds,
+        manualVerificationSeconds: next.manualVerificationSeconds,
+      });
+      setBanner({ kind: "success", text: "Automation Runtime settings saved." });
+    } catch (error) {
+      setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAutomationLog(open = true) {
+    setBusy(true);
+    try {
+      const log = await getAutomationRuntimeLog();
+      setAutomationLog(log);
+      if (open) setShowAutomationLog(true);
     } catch (error) {
       setBanner({ kind: "error", text: errorMessage(error) });
     } finally {
@@ -1558,6 +1664,181 @@ function App() {
               <div className={`banner ${banner.kind}`}>{banner.text}</div>
             )}
 
+            <section className={`automation-master-card ${automationRuntime.running ? "running" : ""}`}>
+              <div className="automation-master-head">
+                <div className="automation-master-title">
+                  <div className="automation-logo">
+                    <img src={seedanceLogo} alt="" aria-hidden="true" />
+                  </div>
+                  <div>
+                    <span className="eyebrow">ONE-CLICK ORCHESTRATION</span>
+                    <h3>Automation Runtime</h3>
+                    <p>
+                      Starts Smart Scheduler, Local API, Profile Allocator and the Seedance
+                      execution adapter as one managed runtime.
+                    </p>
+                  </div>
+                </div>
+                <div className="automation-master-status">
+                  <span className={automationRuntime.running ? "runtime-chip on" : "runtime-chip"}>
+                    {automationRuntime.running ? "RUNNING" : "STOPPED"}
+                  </span>
+                  <label className="master-toggle runtime-toggle" title="Toggle Automation Runtime">
+                    <input
+                      type="checkbox"
+                      checked={automationRuntime.running}
+                      disabled={busy}
+                      onChange={(event) => void toggleAutomationRuntime(event.target.checked)}
+                    />
+                    <span />
+                  </label>
+                </div>
+              </div>
+
+              <div className="automation-dependencies">
+                <span className={scheduler.enabled ? "dependency-chip on" : "dependency-chip"}>
+                  Scheduler {scheduler.enabled ? "ON" : "OFF"}
+                </span>
+                <span className={localApi.running ? "dependency-chip on" : "dependency-chip"}>
+                  Local API {localApi.running ? "ON" : "OFF"}
+                </span>
+                <span className={workerState.running ? "dependency-chip on" : "dependency-chip"}>
+                  Allocator {workerState.running ? "ON" : "OFF"}
+                </span>
+                <span className={automationRuntime.nodePath ? "dependency-chip on" : "dependency-chip error"}>
+                  Node {automationRuntime.nodePath ? "READY" : "MISSING"}
+                </span>
+              </div>
+
+              <div className="automation-config-grid">
+                <label>
+                  Concurrency
+                  <select
+                    value={automationDraft.concurrency}
+                    disabled={automationRuntime.running || busy}
+                    onChange={(event) =>
+                      setAutomationDraft({
+                        ...automationDraft,
+                        concurrency: Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value={1}>1 profile</option>
+                    <option value={2}>2 profiles</option>
+                    <option value={3}>3 profiles</option>
+                    <option value={4}>4 profiles</option>
+                  </select>
+                </label>
+                <label>
+                  Generation timeout
+                  <select
+                    value={automationDraft.timeoutSeconds}
+                    disabled={automationRuntime.running || busy}
+                    onChange={(event) =>
+                      setAutomationDraft({
+                        ...automationDraft,
+                        timeoutSeconds: Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value={600}>10 min</option>
+                    <option value={1200}>20 min</option>
+                    <option value={1800}>30 min</option>
+                    <option value={3600}>60 min</option>
+                  </select>
+                </label>
+                <label>
+                  Manual verification
+                  <select
+                    value={automationDraft.manualVerificationSeconds}
+                    disabled={automationRuntime.running || busy}
+                    onChange={(event) =>
+                      setAutomationDraft({
+                        ...automationDraft,
+                        manualVerificationSeconds: Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value={60}>1 min</option>
+                    <option value={180}>3 min</option>
+                    <option value={300}>5 min</option>
+                    <option value={600}>10 min</option>
+                  </select>
+                </label>
+                <button
+                  className="mini-button automation-save-button"
+                  disabled={
+                    automationRuntime.running ||
+                    busy ||
+                    (automationDraft.concurrency === automationRuntime.concurrency &&
+                      automationDraft.timeoutSeconds === automationRuntime.timeoutSeconds &&
+                      automationDraft.manualVerificationSeconds ===
+                        automationRuntime.manualVerificationSeconds)
+                  }
+                  onClick={() => void saveAutomationConfig()}
+                >
+                  Save settings
+                </button>
+              </div>
+
+              <div className="automation-meta">
+                <div>
+                  <span>PID</span>
+                  <strong>{automationRuntime.pid ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>Started</span>
+                  <strong>{relativeTime(automationRuntime.startedAt)}</strong>
+                </div>
+                <div className="automation-path">
+                  <span>Adapter</span>
+                  <code title={automationRuntime.scriptPath ?? undefined}>
+                    {automationRuntime.scriptPath ?? "Resource unavailable"}
+                  </code>
+                </div>
+              </div>
+
+              {automationRuntime.lastError && (
+                <div className="runtime-error">{automationRuntime.lastError}</div>
+              )}
+
+              <div className="automation-actions">
+                <button
+                  className={automationRuntime.running ? "button secondary" : "button primary"}
+                  disabled={busy}
+                  onClick={() => void toggleAutomationRuntime(!automationRuntime.running)}
+                >
+                  {automationRuntime.running ? "■ Stop automation" : "▶ Start automation"}
+                </button>
+                <button
+                  className="mini-button"
+                  disabled={busy}
+                  onClick={() =>
+                    showAutomationLog
+                      ? setShowAutomationLog(false)
+                      : void refreshAutomationLog(true)
+                  }
+                >
+                  {showAutomationLog ? "Hide logs" : "View logs"}
+                </button>
+                {showAutomationLog && (
+                  <button
+                    className="mini-button"
+                    disabled={busy}
+                    onClick={() => void refreshAutomationLog(false)}
+                  >
+                    Refresh logs
+                  </button>
+                )}
+              </div>
+
+              {showAutomationLog && (
+                <pre className="automation-log">
+                  {automationLog.trim() || "No adapter log output yet."}
+                </pre>
+              )}
+            </section>
+
             <section className="runtime-grid">
               <article className="runtime-card">
                 <div className="runtime-card-head">
@@ -1586,7 +1867,11 @@ function App() {
                     />
                     <button
                       className="mini-button"
-                      disabled={busy || Number(apiPortDraft) === localApi.port}
+                      disabled={
+                        busy ||
+                        automationRuntime.running ||
+                        Number(apiPortDraft) === localApi.port
+                      }
                       onClick={() => void saveApiPort()}
                     >
                       Save
@@ -1611,7 +1896,7 @@ function App() {
                   </button>
                   <button
                     className="mini-button"
-                    disabled={busy}
+                    disabled={busy || automationRuntime.running}
                     onClick={() => void rotateApiKey()}
                   >
                     Rotate key
@@ -1620,7 +1905,7 @@ function App() {
                     <input
                       type="checkbox"
                       checked={localApi.enabled}
-                      disabled={busy}
+                      disabled={busy || automationRuntime.running}
                       onChange={(event) => void toggleLocalApi(event.target.checked)}
                     />
                     <span />
@@ -1675,7 +1960,11 @@ function App() {
                     <input
                       type="checkbox"
                       checked={workerState.enabled}
-                      disabled={busy || (!scheduler.enabled && !workerState.enabled)}
+                      disabled={
+                        busy ||
+                        automationRuntime.running ||
+                        (!scheduler.enabled && !workerState.enabled)
+                      }
                       onChange={(event) => void toggleWorker(event.target.checked)}
                     />
                     <span />
@@ -1689,10 +1978,9 @@ function App() {
                 <span className="eyebrow">PERSISTENT ORCHESTRATION</span>
                 <h3>Queue foundation active</h3>
                 <p>
-                  Jobs are stored in SQLite and can now be queued through the local
-                  API. The allocation worker assigns queued jobs to Ready profiles.
-                  Automatic Seedance website submission and result polling remain a
-                  separate execution-adapter phase.
+                  Jobs are stored in SQLite, assigned to Ready profiles and executed
+                  through the managed Seedance adapter. Lease recovery, profile health
+                  feedback and browser-session reuse keep interrupted jobs recoverable.
                 </p>
               </div>
               <div className="queue-ready-chip">RECOVERY READY</div>
@@ -1762,6 +2050,7 @@ function App() {
                       }
                     >
                       <option value="seedance-2.5">Seedance 2.5</option>
+                      <option value="seedance-2.0">Seedance 2.0</option>
                     </select>
                   </label>
                   <label>
@@ -1867,6 +2156,47 @@ function App() {
                               <span>retry {relativeTime(job.nextRetryAt)}</span>
                             )}
                           </div>
+                          {job.status === "completed" && (
+                            <div className="job-result-meta">
+                              {job.resultWidth && job.resultHeight && (
+                                <span
+                                  className={
+                                    Math.min(job.resultWidth, job.resultHeight) >= 1080
+                                      ? "result-quality-badge hd"
+                                      : "result-quality-badge"
+                                  }
+                                >
+                                  {job.resultWidth}×{job.resultHeight}
+                                </span>
+                              )}
+                              {job.resultNoWatermark === true && (
+                                <span
+                                  className="result-quality-badge original"
+                                  title="Selected from Dola video_model original-stream candidates."
+                                >
+                                  Original · no-watermark priority
+                                </span>
+                              )}
+                              {job.resultSourceKind && (
+                                <span className="result-quality-badge">
+                                  {job.resultSourceKind}
+                                </span>
+                              )}
+                              {job.resultFileSize && (
+                                <span>
+                                  {(job.resultFileSize / 1024 / 1024).toFixed(1)} MB
+                                </span>
+                              )}
+                              {job.resultBitrate && (
+                                <span>
+                                  {(job.resultBitrate / 1_000_000).toFixed(1)} Mbps
+                                </span>
+                              )}
+                              {job.localPath && (
+                                <code title={job.localPath}>{job.localPath}</code>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="job-assignment">
                           <span>Profile</span>

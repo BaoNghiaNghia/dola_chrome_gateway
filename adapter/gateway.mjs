@@ -64,10 +64,20 @@ export class GatewayClient {
     });
   }
 
-  complete(jobId, leaseToken, resultUrl) {
+  complete(jobId, leaseToken, result) {
     return this.request(`/v1/adapter/jobs/${jobId}/complete`, {
       method: "POST",
-      body: JSON.stringify({ leaseToken, resultUrl }),
+      body: JSON.stringify({
+        leaseToken,
+        resultUrl: result.url,
+        localPath: result.localPath ?? null,
+        width: result.width ?? null,
+        height: result.height ?? null,
+        bitrate: result.bitrate ?? null,
+        fileSize: result.fileSize ?? null,
+        noWatermark: result.noWatermark ?? null,
+        sourceKind: result.sourceKind ?? null,
+      }),
     });
   }
 

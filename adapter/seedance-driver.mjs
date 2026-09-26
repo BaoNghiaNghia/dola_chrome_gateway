@@ -1,4 +1,5 @@
 import { delay } from "./cdp.mjs";
+import { selectBestVideoResult } from "./video-result.mjs";
 
 export class AdapterError extends Error {
   constructor(code, message, { retryable = false, retryAfterSeconds = 30 } = {}) {
@@ -459,7 +460,13 @@ export class SeedanceDriver {
           });
 
           if (!response.ok) {
-            return { ok: false, status: response.status, texts: [], videos: [] };
+            return {
+              ok: false,
+              status: response.status,
+              texts: [],
+              videos: [],
+              videoModels: [],
+            };
           }
 
           const data = await response.json();
@@ -467,6 +474,7 @@ export class SeedanceDriver {
             data?.downlink_body?.pull_singe_chain_downlink_body?.messages || [];
           const texts = [];
           const videos = [];
+          const videoModels = [];
 
           for (const message of messages) {
             let content = message?.content;
@@ -487,27 +495,90 @@ export class SeedanceDriver {
               const creations = block?.content?.creation_block?.creations || [];
               for (const creation of creations) {
                 if (creation?.type !== 2) continue;
-                const url = creation?.video?.download_url;
+                const video = creation?.video || {};
+                const url = video.download_url;
                 if (typeof url === "string" && /^https?:\\/\\//i.test(url)) {
                   videos.push(url);
+                  videoModels.push(video.video_model || "");
                 }
               }
             }
           }
 
-          return { ok: true, status: response.status, texts, videos };
+          return {
+            ok: true,
+            status: response.status,
+            texts,
+            videos,
+            videoModels,
+          };
         } catch (error) {
           return {
             ok: false,
             status: 0,
             texts: [],
             videos: [],
+            videoModels: [],
             error: String(error?.message || error),
           };
         }
       })()`,
       { timeoutMs: 30_000 },
     );
+  }
+
+  async probeVideoMetadata(url) {
+    if (!url || !/^https?:\/\//i.test(url)) {
+      return { width: null, height: null, duration: null };
+    }
+
+    const source = JSON.stringify(url);
+    return this.evaluate(
+      `(() => new Promise((resolve) => {
+        const video = document.createElement("video");
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try { video.removeAttribute("src"); video.load(); } catch {}
+          video.remove();
+          resolve(value);
+        };
+        const timer = setTimeout(
+          () => finish({ width: null, height: null, duration: null }),
+          12000,
+        );
+        video.preload = "metadata";
+        video.muted = true;
+        video.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none";
+        video.addEventListener("loadedmetadata", () => finish({
+          width: Number(video.videoWidth) || null,
+          height: Number(video.videoHeight) || null,
+          duration: Number.isFinite(video.duration) ? video.duration : null,
+        }), { once: true });
+        video.addEventListener("error", () => finish({
+          width: null,
+          height: null,
+          duration: null,
+        }), { once: true });
+        document.documentElement.appendChild(video);
+        video.src = ${source};
+        video.load();
+      }))()`,
+      { timeoutMs: 15_000 },
+    ).catch(() => ({ width: null, height: null, duration: null }));
+  }
+
+  async finalizeVideoCandidate(candidate) {
+    if (!candidate?.url) return candidate;
+    const metadata = await this.probeVideoMetadata(candidate.url);
+    return {
+      ...candidate,
+      width: metadata?.width || candidate.width || null,
+      height: metadata?.height || candidate.height || null,
+      duration: metadata?.duration || null,
+    };
   }
 
   async pollResult(conversationId, timeoutMs = undefined) {
@@ -543,10 +614,13 @@ export class SeedanceDriver {
           );
         }
 
-        const apiResultUrl = (poll.videos || []).find((url) =>
-          /^https?:\/\//i.test(url),
+        const apiResult = selectBestVideoResult(
+          poll.videoModels || [],
+          poll.videos || [],
         );
-        if (apiResultUrl) return apiResultUrl;
+        if (apiResult) {
+          return this.finalizeVideoCandidate(apiResult);
+        }
       }
 
       const state = await this.snapshot();
@@ -562,7 +636,19 @@ export class SeedanceDriver {
       const domResultUrl = (state?.resultUrls || []).find((url) =>
         /^https?:\/\//i.test(url),
       );
-      if (domResultUrl) return domResultUrl;
+      if (domResultUrl) {
+        return this.finalizeVideoCandidate({
+          url: domResultUrl,
+          fallbackUrl: null,
+          sourceKind: "dom",
+          noWatermark: false,
+          width: null,
+          height: null,
+          bitrate: 0,
+          resolutionHint: 0,
+          candidateCount: 0,
+        });
+      }
 
       const elapsed = Date.now() - startedAt;
       const progress = Math.min(

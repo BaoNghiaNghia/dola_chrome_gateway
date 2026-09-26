@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "adapter": "node adapter/seedance-adapter.mjs",
-    "adapter:test": "node --check adapter/seedance-adapter.mjs && node --check adapter/gateway.mjs && node --check adapter/cdp.mjs && node --check adapter/seedance-driver.mjs && node --test adapter/*.test.mjs",
+    "adapter:test": "node --check adapter/seedance-adapter.mjs && node --check adapter/gateway.mjs && node --check adapter/cdp.mjs && node --check adapter/seedance-driver.mjs && node --check adapter/video-result.mjs && node --test adapter/*.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

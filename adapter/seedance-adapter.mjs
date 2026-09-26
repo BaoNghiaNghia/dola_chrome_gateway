@@ -1,6 +1,7 @@
 import { CdpClient, delay } from "./cdp.mjs";
 import { GatewayClient } from "./gateway.mjs";
 import { AdapterError, SeedanceDriver } from "./seedance-driver.mjs";
+import { downloadVideoResult } from "./video-result.mjs";
 
 const baseUrl = process.env.DOLA_GATEWAY_URL || "http://127.0.0.1:8787";
 const apiKey = process.env.DOLA_GATEWAY_KEY || "";
@@ -194,7 +195,36 @@ async function executeClaim(workerId, claim) {
       Number(job.durationSeconds) === 30
         ? Math.max(timeoutSeconds, 1_800) * 1000
         : timeoutSeconds * 1000;
-    const resultUrl = await driver.pollResult(conversationId, jobTimeoutMs);
+    const selectedResult = await driver.pollResult(conversationId, jobTimeoutMs);
+    log(
+      workerId,
+      `video ready: source=${selectedResult.sourceKind} noWatermark=${selectedResult.noWatermark} resolution=${selectedResult.width || "?"}x${selectedResult.height || "?"} bitrate=${selectedResult.bitrate || 0}`,
+    );
+
+    await gateway.progress(job.id, leaseToken, 97, conversationId);
+
+    let downloadedResult;
+    try {
+      downloadedResult = await downloadVideoResult(selectedResult, job.id);
+    } catch (downloadError) {
+      throw new AdapterError(
+        "download_failed",
+        `Video generated but local download failed: ${
+          downloadError instanceof Error ? downloadError.message : String(downloadError)
+        }`,
+        { retryable: true, retryAfterSeconds: 60 },
+      );
+    }
+
+    if (downloadedResult.fallbackUsed) {
+      downloadedResult = await driver.finalizeVideoCandidate(downloadedResult);
+      log(
+        workerId,
+        `original stream download failed; used download_url fallback: ${downloadedResult.primaryDownloadError || "unknown original-stream error"}`,
+      );
+    }
+
+    await gateway.progress(job.id, leaseToken, 99, conversationId);
 
     if (browserOpened) {
       await gateway.closeBrowser(job.id, leaseToken).catch((error) => {
@@ -203,8 +233,11 @@ async function executeClaim(workerId, claim) {
       browserOpened = false;
     }
 
-    await gateway.complete(job.id, leaseToken, resultUrl);
-    log(workerId, `completed job ${job.id}: ${resultUrl}`);
+    await gateway.complete(job.id, leaseToken, downloadedResult);
+    log(
+      workerId,
+      `completed job ${job.id}: ${downloadedResult.localPath} (${downloadedResult.fileSize || 0} bytes, ${downloadedResult.width || "?"}x${downloadedResult.height || "?"}, noWatermark=${downloadedResult.noWatermark})`,
+    );
   } catch (error) {
     const failure = normalizedFailure(error);
     log(

@@ -1,3 +1,4 @@
+mod adapter_runtime;
 mod api_server;
 mod chrome;
 mod commands;
@@ -18,6 +19,9 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir().map_err(|e| {
                 std::io::Error::other(format!("Cannot resolve app data directory: {e}"))
             })?;
+            let resource_dir = app.path().resource_dir().map_err(|e| {
+                std::io::Error::other(format!("Cannot resolve app resource directory: {e}"))
+            })?;
             let profiles_dir = app_data_dir.join("profiles");
             std::fs::create_dir_all(&profiles_dir)?;
 
@@ -25,7 +29,12 @@ pub fn run() {
             db::init(&db_path).map_err(std::io::Error::other)?;
             db::mark_interrupted_jobs_recovering(&db_path).map_err(std::io::Error::other)?;
 
-            let state = AppState::new(db_path.clone(), profiles_dir);
+            let state = AppState::new(
+                app_data_dir.clone(),
+                resource_dir,
+                db_path.clone(),
+                profiles_dir,
+            );
 
             let api_settings =
                 db::get_local_api_settings(&db_path).map_err(std::io::Error::other)?;
@@ -88,6 +97,10 @@ pub fn run() {
             commands::get_worker_state,
             commands::set_worker_enabled,
             commands::run_worker_tick,
+            commands::get_automation_runtime_state,
+            commands::update_automation_runtime_config,
+            commands::set_automation_runtime_enabled,
+            commands::get_automation_runtime_log,
             commands::get_proxy_pool_state,
             commands::set_proxy_pool_enabled,
             commands::create_proxy_pool_item,

@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AutomationRuntimeConfigInput,
+  AutomationRuntimeState,
   BrowserProfile,
   CreateGenerationJobInput,
   CreateProfileInput,
@@ -201,6 +203,41 @@ export async function setWorkerEnabled(enabled: boolean): Promise<WorkerState> {
 
 export async function runWorkerTick(): Promise<number> {
   return invoke<number>("run_worker_tick");
+}
+
+export async function getAutomationRuntimeState(): Promise<AutomationRuntimeState> {
+  if (!isTauri()) {
+    return {
+      running: false,
+      pid: null,
+      concurrency: 1,
+      timeoutSeconds: 1200,
+      manualVerificationSeconds: 180,
+      nodePath: null,
+      scriptPath: null,
+      logPath: null,
+      startedAt: null,
+      lastError: null,
+    };
+  }
+  return invoke<AutomationRuntimeState>("get_automation_runtime_state");
+}
+
+export async function setAutomationRuntimeEnabled(
+  enabled: boolean,
+): Promise<AutomationRuntimeState> {
+  return invoke<AutomationRuntimeState>("set_automation_runtime_enabled", { enabled });
+}
+
+export async function updateAutomationRuntimeConfig(
+  request: AutomationRuntimeConfigInput,
+): Promise<AutomationRuntimeState> {
+  return invoke<AutomationRuntimeState>("update_automation_runtime_config", { request });
+}
+
+export async function getAutomationRuntimeLog(maxBytes = 16000): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("get_automation_runtime_log", { maxBytes });
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {

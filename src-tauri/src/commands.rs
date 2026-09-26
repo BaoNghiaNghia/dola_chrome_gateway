@@ -1,12 +1,13 @@
+use crate::adapter_runtime;
 use crate::api_server;
 use crate::chrome;
 use crate::db;
 use crate::models::{
-    BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest, CreateWorkspaceRequest,
-    GenerationJob, LocalApiState, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem,
-    ProxyPoolItemRequest, ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState,
-    SystemInfo, UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, WorkerState,
-    Workspace,
+    AutomationRuntimeConfigRequest, AutomationRuntimeState, BrowserProfile,
+    CreateGenerationJobRequest, CreateProfileRequest, CreateWorkspaceRequest, GenerationJob,
+    LocalApiState, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest,
+    ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState, SystemInfo,
+    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, WorkerState, Workspace,
 };
 use crate::proxy;
 use crate::state::AppState;
@@ -490,6 +491,9 @@ pub fn set_local_api_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<LocalApiState, String> {
+    if !enabled && adapter_runtime_running(&state)? {
+        return Err("Stop Automation Runtime before disabling Local API.".into());
+    }
     let settings = db::set_local_api_enabled(&state.db_path, enabled)?;
 
     if enabled {
@@ -506,6 +510,9 @@ pub fn set_local_api_enabled(
 
 #[tauri::command]
 pub fn set_local_api_port(port: u16, state: State<'_, AppState>) -> Result<LocalApiState, String> {
+    if adapter_runtime_running(&state)? {
+        return Err("Stop Automation Runtime before changing the Local API port.".into());
+    }
     let previous = db::get_local_api_settings(&state.db_path)?;
     if previous.port == port {
         return get_local_api_state(state);
@@ -537,6 +544,9 @@ pub fn reveal_local_api_key(state: State<'_, AppState>) -> Result<String, String
 
 #[tauri::command]
 pub fn rotate_local_api_key(state: State<'_, AppState>) -> Result<String, String> {
+    if adapter_runtime_running(&state)? {
+        return Err("Stop Automation Runtime before rotating the Local API key.".into());
+    }
     db::rotate_local_api_key(&state.db_path)
 }
 
@@ -581,6 +591,334 @@ pub fn set_worker_enabled(
 #[tauri::command]
 pub fn run_worker_tick(state: State<'_, AppState>) -> Result<usize, String> {
     worker::allocation_tick(&state.db_path)
+}
+
+fn recover_adapter_runtime_jobs(
+    state: &AppState,
+    pid: u32,
+    close_browsers: bool,
+) -> Result<(), String> {
+    let owner_prefix = format!("seedance-adapter-{pid}-");
+    let profile_ids = db::recover_adapter_runtime_leases(&state.db_path, &owner_prefix)?;
+
+    if !close_browsers {
+        return Ok(());
+    }
+
+    let mut first_error: Option<String> = None;
+    for profile_id in profile_ids {
+        let profile = match db::get_profile(&state.db_path, &profile_id) {
+            Ok(Some(profile)) => profile,
+            Ok(None) => continue,
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+                continue;
+            }
+        };
+
+        let profile_path = PathBuf::from(&profile.profile_path);
+        if let Err(error) = chrome::close_profile(&profile_path, None) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+        let _ = db::release_profile_proxy_assignment(&state.db_path, &profile_id);
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn refresh_adapter_runtime(state: &AppState) -> Result<(), String> {
+    let mut runtime = state
+        .adapter_runtime
+        .lock()
+        .map_err(|_| "Automation Runtime state is unavailable.".to_string())?;
+
+    let exited = runtime
+        .as_mut()
+        .is_some_and(|process| !process.is_running());
+
+    if exited {
+        let stale = runtime
+            .take()
+            .ok_or_else(|| "Automation Runtime state changed unexpectedly.".to_string())?;
+        let pid = stale.pid();
+        let log_path = stale.log_path.display().to_string();
+        let _ = stale.stop();
+        drop(runtime);
+        let _ = recover_adapter_runtime_jobs(state, pid, false);
+
+        let mut last_error = state
+            .adapter_last_error
+            .lock()
+            .map_err(|_| "Automation Runtime error state is unavailable.".to_string())?;
+        if last_error.is_none() {
+            *last_error = Some(format!(
+                "Seedance adapter process {pid} exited unexpectedly. See {log_path}."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn adapter_runtime_running(state: &AppState) -> Result<bool, String> {
+    refresh_adapter_runtime(state)?;
+    Ok(state
+        .adapter_runtime
+        .lock()
+        .map_err(|_| "Automation Runtime state is unavailable.".to_string())?
+        .is_some())
+}
+
+fn start_adapter_runtime(state: &AppState) -> Result<(), String> {
+    refresh_adapter_runtime(state)?;
+    if state
+        .adapter_runtime
+        .lock()
+        .map_err(|_| "Automation Runtime state is unavailable.".to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let api = db::get_local_api_settings(&state.db_path)?;
+    if !api.enabled || !api_runtime_running(state)? {
+        return Err("Local API must be running before Automation Runtime can start.".into());
+    }
+
+    let config = state
+        .adapter_config
+        .lock()
+        .map_err(|_| "Automation Runtime config is unavailable.".to_string())?
+        .clone();
+
+    let gateway_url = format!("http://127.0.0.1:{}", api.port);
+    match adapter_runtime::start(
+        &state.resource_dir,
+        &state.app_data_dir,
+        &gateway_url,
+        &api.api_key,
+        &config,
+    ) {
+        Ok(runtime) => {
+            *state
+                .adapter_runtime
+                .lock()
+                .map_err(|_| "Automation Runtime state is unavailable.".to_string())? =
+                Some(runtime);
+            *state
+                .adapter_last_error
+                .lock()
+                .map_err(|_| "Automation Runtime error state is unavailable.".to_string())? = None;
+            Ok(())
+        }
+        Err(error) => {
+            *state
+                .adapter_last_error
+                .lock()
+                .map_err(|_| "Automation Runtime error state is unavailable.".to_string())? =
+                Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
+fn stop_adapter_runtime(state: &AppState) -> Result<(), String> {
+    let runtime = state
+        .adapter_runtime
+        .lock()
+        .map_err(|_| "Automation Runtime state is unavailable.".to_string())?
+        .take();
+
+    if let Some(runtime) = runtime {
+        let pid = runtime.pid();
+        if let Err(error) = runtime.stop() {
+            *state
+                .adapter_last_error
+                .lock()
+                .map_err(|_| "Automation Runtime error state is unavailable.".to_string())? =
+                Some(error.clone());
+            let _ = recover_adapter_runtime_jobs(state, pid, true);
+            return Err(error);
+        }
+        recover_adapter_runtime_jobs(state, pid, true)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_automation_runtime_state(
+    state: State<'_, AppState>,
+) -> Result<AutomationRuntimeState, String> {
+    refresh_adapter_runtime(&state)?;
+
+    let config = state
+        .adapter_config
+        .lock()
+        .map_err(|_| "Automation Runtime config is unavailable.".to_string())?
+        .clone();
+
+    let runtime = state
+        .adapter_runtime
+        .lock()
+        .map_err(|_| "Automation Runtime state is unavailable.".to_string())?;
+
+    let (running, pid, node_path, script_path, log_path, started_at) =
+        if let Some(process) = runtime.as_ref() {
+            (
+                true,
+                Some(process.pid()),
+                Some(process.node_path.display().to_string()),
+                Some(process.script_path.display().to_string()),
+                Some(process.log_path.display().to_string()),
+                Some(process.started_at.clone()),
+            )
+        } else {
+            let node_path =
+                adapter_runtime::find_node_executable().map(|path| path.display().to_string());
+            let script_path = adapter_runtime::resolve_adapter_script(&state.resource_dir)
+                .ok()
+                .map(|path| path.display().to_string());
+            let default_log = state.app_data_dir.join("logs").join("seedance-adapter.log");
+            (
+                false,
+                None,
+                node_path,
+                script_path,
+                Some(default_log.display().to_string()),
+                None,
+            )
+        };
+
+    let last_error = state
+        .adapter_last_error
+        .lock()
+        .map_err(|_| "Automation Runtime error state is unavailable.".to_string())?
+        .clone();
+
+    Ok(AutomationRuntimeState {
+        running,
+        pid,
+        concurrency: config.concurrency,
+        timeout_seconds: config.timeout_seconds,
+        manual_verification_seconds: config.manual_verification_seconds,
+        node_path,
+        script_path,
+        log_path,
+        started_at,
+        last_error,
+    })
+}
+
+#[tauri::command]
+pub fn update_automation_runtime_config(
+    request: AutomationRuntimeConfigRequest,
+    state: State<'_, AppState>,
+) -> Result<AutomationRuntimeState, String> {
+    if adapter_runtime_running(&state)? {
+        return Err("Stop Automation Runtime before changing adapter settings.".into());
+    }
+
+    let mut config = state
+        .adapter_config
+        .lock()
+        .map_err(|_| "Automation Runtime config is unavailable.".to_string())?;
+    *config = adapter_runtime::AdapterRuntimeConfig::normalized(
+        request.concurrency,
+        request.timeout_seconds,
+        request.manual_verification_seconds,
+        &config,
+    );
+    drop(config);
+
+    get_automation_runtime_state(state)
+}
+
+#[tauri::command]
+pub fn set_automation_runtime_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<AutomationRuntimeState, String> {
+    if enabled {
+        if adapter_runtime_running(&state)? {
+            return get_automation_runtime_state(state);
+        }
+
+        let previous_scheduler = db::get_scheduler_enabled(&state.db_path)?;
+        let previous_api = db::get_local_api_settings(&state.db_path)?;
+        let previous_worker = db::get_worker_settings(&state.db_path)?;
+
+        db::set_scheduler_enabled(&state.db_path, true)?;
+
+        if !previous_api.enabled {
+            db::set_local_api_enabled(&state.db_path, true)?;
+        }
+        if let Err(error) = start_api_runtime(&state, previous_api.port) {
+            if !previous_api.enabled {
+                let _ = db::set_local_api_enabled(&state.db_path, false);
+            }
+            if !previous_scheduler {
+                let _ = db::set_scheduler_enabled(&state.db_path, false);
+            }
+            return Err(error);
+        }
+
+        if !previous_worker.enabled {
+            db::set_worker_enabled(&state.db_path, true)?;
+        }
+        if let Err(error) = start_worker_runtime(&state) {
+            if !previous_worker.enabled {
+                let _ = db::set_worker_enabled(&state.db_path, false);
+            }
+            if !previous_api.enabled {
+                let _ = stop_api_runtime(&state);
+                let _ = db::set_local_api_enabled(&state.db_path, false);
+            }
+            if !previous_scheduler {
+                let _ = db::set_scheduler_enabled(&state.db_path, false);
+            }
+            return Err(error);
+        }
+
+        if let Err(error) = start_adapter_runtime(&state) {
+            if !previous_worker.enabled {
+                let _ = db::set_worker_enabled(&state.db_path, false);
+                let _ = stop_worker_runtime(&state);
+            }
+            if !previous_api.enabled {
+                let _ = db::set_local_api_enabled(&state.db_path, false);
+                let _ = stop_api_runtime(&state);
+            }
+            if !previous_scheduler {
+                let _ = db::set_scheduler_enabled(&state.db_path, false);
+            }
+            return Err(error);
+        }
+    } else {
+        let stop_result = stop_adapter_runtime(&state);
+        let _ = db::set_worker_enabled(&state.db_path, false);
+        let _ = stop_worker_runtime(&state);
+        let _ = db::set_local_api_enabled(&state.db_path, false);
+        let _ = stop_api_runtime(&state);
+        stop_result?;
+    }
+
+    get_automation_runtime_state(state)
+}
+
+#[tauri::command]
+pub fn get_automation_runtime_log(
+    max_bytes: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = state.app_data_dir.join("logs").join("seedance-adapter.log");
+    adapter_runtime::read_log_tail(&path, max_bytes.unwrap_or(16_000).clamp(1_000, 100_000))
 }
 
 #[tauri::command]

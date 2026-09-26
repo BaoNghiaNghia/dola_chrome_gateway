@@ -152,6 +152,13 @@ export type GenerationJob = {
   proxyId: string | null;
   externalTaskId: string | null;
   resultUrl: string | null;
+  localPath: string | null;
+  resultWidth: number | null;
+  resultHeight: number | null;
+  resultBitrate: number | null;
+  resultFileSize: number | null;
+  resultNoWatermark: boolean | null;
+  resultSourceKind: string | null;
   failureCode: string | null;
   errorMessage: string | null;
   deadlineAt: string | null;
@@ -195,6 +202,25 @@ export type LocalApiState = {
   port: number;
   baseUrl: string;
   apiKeyPreview: string;
+};
+
+export type AutomationRuntimeState = {
+  running: boolean;
+  pid: number | null;
+  concurrency: number;
+  timeoutSeconds: number;
+  manualVerificationSeconds: number;
+  nodePath: string | null;
+  scriptPath: string | null;
+  logPath: string | null;
+  startedAt: string | null;
+  lastError: string | null;
+};
+
+export type AutomationRuntimeConfigInput = {
+  concurrency?: number | null;
+  timeoutSeconds?: number | null;
+  manualVerificationSeconds?: number | null;
 };
 
 export type WorkerState = {

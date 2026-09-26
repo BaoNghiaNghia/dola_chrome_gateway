@@ -350,6 +350,13 @@ fn handle_request(mut stream: TcpStream, db_path: &Path) {
                         job_id,
                         &payload.lease_token,
                         &payload.result_url,
+                        payload.local_path.as_deref(),
+                        payload.width,
+                        payload.height,
+                        payload.bitrate,
+                        payload.file_size,
+                        payload.no_watermark,
+                        payload.source_kind.as_deref(),
                     )
                 }),
             "fail" => serde_json::from_slice::<AdapterFailRequest>(&request.body)
@@ -656,7 +663,7 @@ mod tests {
         assert!(progress.contains("\"progressPercent\":42"));
 
         let complete_body = format!(
-            r#"{{"leaseToken":"{lease_token}","resultUrl":"https://example.test/result.mp4"}}"#
+            r#"{{"leaseToken":"{lease_token}","resultUrl":"https://example.test/result.mp4","localPath":"C:\\Dola\\downloads\\job.mp4","width":1920,"height":1080,"bitrate":8000000,"fileSize":12345678,"noWatermark":true,"sourceKind":"video_model"}}"#
         );
         let completed = post_json(
             port,
@@ -678,8 +685,54 @@ mod tests {
             stored.result_url.as_deref(),
             Some("https://example.test/result.mp4")
         );
+        assert_eq!(
+            stored.local_path.as_deref(),
+            Some("C:\\Dola\\downloads\\job.mp4")
+        );
+        assert_eq!(stored.result_width, Some(1920));
+        assert_eq!(stored.result_height, Some(1080));
+        assert_eq!(stored.result_bitrate, Some(8_000_000));
+        assert_eq!(stored.result_file_size, Some(12_345_678));
+        assert_eq!(stored.result_no_watermark, Some(true));
+        assert_eq!(stored.result_source_kind.as_deref(), Some("video_model"));
 
         runtime.stop();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adapter_runtime_recovery_preserves_external_task_for_resume() {
+        let (root, db_path) = temp_db();
+        let assigned = create_assigned_job(&root, &db_path);
+
+        let claim = db::claim_adapter_job(&db_path, "seedance-adapter-4242-1", 120)
+            .unwrap()
+            .unwrap();
+        let started = db::start_adapter_job(
+            &db_path,
+            &assigned.id,
+            &claim.lease_token,
+            Some("conversation-123"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(started.status, "starting");
+
+        let profiles =
+            db::recover_adapter_runtime_leases(&db_path, "seedance-adapter-4242-").unwrap();
+        assert_eq!(profiles.len(), 1);
+
+        let recovered = db::get_generation_job(&db_path, &assigned.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, "recovering");
+        assert_eq!(
+            recovered.external_task_id.as_deref(),
+            Some("conversation-123")
+        );
+        assert!(recovered.lease_owner.is_none());
+        assert!(recovered.lease_expires_at.is_none());
+
         let _ = fs::remove_dir_all(root);
     }
 

@@ -211,6 +211,13 @@ pub struct GenerationJob {
     pub proxy_id: Option<String>,
     pub external_task_id: Option<String>,
     pub result_url: Option<String>,
+    pub local_path: Option<String>,
+    pub result_width: Option<u32>,
+    pub result_height: Option<u32>,
+    pub result_bitrate: Option<u64>,
+    pub result_file_size: Option<u64>,
+    pub result_no_watermark: Option<bool>,
+    pub result_source_kind: Option<String>,
     pub failure_code: Option<String>,
     pub error_message: Option<String>,
     pub deadline_at: Option<String>,
@@ -302,6 +309,13 @@ pub struct AdapterProgressRequest {
 pub struct AdapterCompleteRequest {
     pub lease_token: String,
     pub result_url: String,
+    pub local_path: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub bitrate: Option<u64>,
+    pub file_size: Option<u64>,
+    pub no_watermark: Option<bool>,
+    pub source_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -361,6 +375,29 @@ pub struct LocalApiState {
     pub port: u16,
     pub base_url: String,
     pub api_key_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRuntimeState {
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub concurrency: u8,
+    pub timeout_seconds: u64,
+    pub manual_verification_seconds: u64,
+    pub node_path: Option<String>,
+    pub script_path: Option<String>,
+    pub log_path: Option<String>,
+    pub started_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRuntimeConfigRequest {
+    pub concurrency: Option<u8>,
+    pub timeout_seconds: Option<u64>,
+    pub manual_verification_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1658,6 +1658,211 @@ button:disabled {
   color: #9a5d32;
 }
 
+/* One-click automation runtime */
+.automation-master-card {
+  margin-bottom: 16px;
+  padding: 18px;
+  border: 1px solid #dedcf3;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 88% 8%, rgba(108, 83, 240, .11), transparent 24rem),
+    rgba(255, 255, 255, .97);
+  box-shadow: 0 8px 30px rgba(38, 48, 74, .045);
+}
+
+.automation-master-card.running {
+  border-color: #c9dfd4;
+  background:
+    radial-gradient(circle at 88% 8%, rgba(54, 158, 111, .10), transparent 24rem),
+    rgba(255, 255, 255, .98);
+}
+
+.automation-master-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.automation-master-title {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.automation-logo {
+  width: 38px;
+  height: 38px;
+  padding: 5px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: #19175c;
+}
+
+.automation-logo img {
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+}
+
+.automation-master-title h3 {
+  margin: 3px 0 4px;
+  color: #303748;
+  font-size: 15px;
+}
+
+.automation-master-title p {
+  max-width: 720px;
+  margin: 0;
+  color: #8991a0;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.automation-master-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.automation-dependencies {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.dependency-chip {
+  padding: 5px 8px;
+  border: 1px solid #e1e3e9;
+  border-radius: 999px;
+  color: #878f9e;
+  background: #f8f9fb;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .025em;
+}
+
+.dependency-chip.on {
+  color: #267858;
+  border-color: #c8e6d8;
+  background: #effaf5;
+}
+
+.dependency-chip.error {
+  color: #a54455;
+  border-color: #efcad2;
+  background: #fff4f6;
+}
+
+.automation-config-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.automation-config-grid label {
+  display: block;
+  color: #60697a;
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .045em;
+}
+
+.automation-config-grid select {
+  width: 100%;
+  height: 31px;
+  margin-top: 5px;
+  padding: 0 8px;
+  border: 1px solid #dce0e8;
+  border-radius: 7px;
+  outline: 0;
+  color: #424a5c;
+  background: white;
+  font-size: 9px;
+}
+
+.automation-save-button {
+  height: 31px;
+  white-space: nowrap;
+}
+
+.automation-meta {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 90px 120px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.automation-meta > div {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid #ececf3;
+  border-radius: 8px;
+  background: #fbfbfe;
+}
+
+.automation-meta span,
+.automation-meta strong,
+.automation-meta code {
+  display: block;
+}
+
+.automation-meta span {
+  color: #969dac;
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.automation-meta strong,
+.automation-meta code {
+  margin-top: 3px;
+  color: #4a5264;
+  font-size: 9px;
+}
+
+.automation-path code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-actions {
+  margin-top: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.automation-log {
+  max-height: 230px;
+  margin: 12px 0 0;
+  padding: 11px 12px;
+  overflow: auto;
+  border: 1px solid #dedfe8;
+  border-radius: 9px;
+  color: #d7dae2;
+  background: #1d2130;
+  font: 9px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 1180px) {
+  .automation-config-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .automation-meta {
+    grid-template-columns: 80px 110px minmax(0, 1fr);
+  }
+}
+
 /* Queue runtime controls */
 .runtime-grid {
   margin-bottom: 18px;
@@ -2068,6 +2273,47 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.job-result-meta {
+  margin-top: 7px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: #8c94a3;
+  font-size: 8px;
+}
+
+.job-result-meta code {
+  max-width: 360px;
+  overflow: hidden;
+  color: #667085;
+  font: 8px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-quality-badge {
+  padding: 3px 6px;
+  border: 1px solid #e0e3e9;
+  border-radius: 999px;
+  color: #727b8c;
+  background: #f8f9fb;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.result-quality-badge.hd {
+  color: #2b6f91;
+  border-color: #c9dfeb;
+  background: #f1f9fd;
+}
+
+.result-quality-badge.original {
+  color: #277858;
+  border-color: #c8e6d8;
+  background: #effaf5;
 }
 
 .job-status {

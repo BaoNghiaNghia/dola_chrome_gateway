@@ -242,6 +242,13 @@ pub fn init(db_path: &Path) -> Result<(), String> {
             proxy_id TEXT,
             external_task_id TEXT,
             result_url TEXT,
+            local_path TEXT,
+            result_width INTEGER,
+            result_height INTEGER,
+            result_bitrate INTEGER,
+            result_file_size INTEGER,
+            result_no_watermark INTEGER,
+            result_source_kind TEXT,
             failure_code TEXT,
             error_message TEXT,
             deadline_at TEXT,
@@ -336,6 +343,14 @@ pub fn init(db_path: &Path) -> Result<(), String> {
     ensure_column(&conn, "generation_jobs", "lease_owner", "TEXT")?;
     ensure_column(&conn, "generation_jobs", "lease_expires_at", "TEXT")?;
     ensure_column(&conn, "generation_jobs", "next_retry_at", "TEXT")?;
+    ensure_column(&conn, "generation_jobs", "local_path", "TEXT")?;
+    ensure_column(&conn, "generation_jobs", "result_width", "INTEGER")?;
+    ensure_column(&conn, "generation_jobs", "result_height", "INTEGER")?;
+    ensure_column(&conn, "generation_jobs", "result_bitrate", "INTEGER")?;
+    ensure_column(&conn, "generation_jobs", "result_file_size", "INTEGER")?;
+    ensure_column(&conn, "generation_jobs", "result_no_watermark", "INTEGER")?;
+    ensure_column(&conn, "generation_jobs", "result_source_kind", "TEXT")?;
+
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_generation_jobs_adapter
             ON generation_jobs(status, next_retry_at, lease_expires_at, created_at);",
@@ -1170,6 +1185,46 @@ pub fn record_worker_tick(db_path: &Path, error: Option<&str>) -> Result<(), Str
     Ok(())
 }
 
+pub fn recover_adapter_runtime_leases(
+    db_path: &Path,
+    owner_prefix: &str,
+) -> Result<Vec<String>, String> {
+    let conn = connection(db_path)?;
+    let pattern = format!("{owner_prefix}%");
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT profile_id
+             FROM generation_jobs
+             WHERE profile_id IS NOT NULL
+               AND lease_owner LIKE ?1
+               AND status IN ('assigned', 'recovering', 'starting', 'generating')",
+        )
+        .map_err(|e| e.to_string())?;
+    let profile_ids = stmt
+        .query_map(params![&pattern], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE generation_jobs
+         SET status = 'recovering',
+             lease_token = NULL,
+             lease_owner = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?2
+         WHERE lease_owner LIKE ?1
+           AND status IN ('assigned', 'recovering', 'starting', 'generating')",
+        params![&pattern, &now],
+    )
+    .map_err(|e| format!("Cannot recover adapter runtime leases: {e}"))?;
+
+    Ok(profile_ids)
+}
+
 pub fn count_active_job_assignments(db_path: &Path) -> Result<usize, String> {
     let conn = connection(db_path)?;
     conn.query_row(
@@ -1367,27 +1422,44 @@ fn row_to_generation_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Generation
         proxy_id: row.get(7)?,
         external_task_id: row.get(8)?,
         result_url: row.get(9)?,
-        failure_code: row.get(10)?,
-        error_message: row.get(11)?,
-        deadline_at: row.get(12)?,
-        last_poll_at: row.get(13)?,
-        progress_percent: row.get::<_, i64>(14)?.clamp(0, 100) as u8,
-        attempt_count: row.get::<_, i64>(15)?.max(0) as u32,
-        lease_owner: row.get(16)?,
-        lease_expires_at: row.get(17)?,
-        next_retry_at: row.get(18)?,
-        created_at: row.get(19)?,
-        started_at: row.get(20)?,
-        completed_at: row.get(21)?,
-        updated_at: row.get(22)?,
+        local_path: row.get(10)?,
+        result_width: row
+            .get::<_, Option<i64>>(11)?
+            .map(|value| value.max(0) as u32),
+        result_height: row
+            .get::<_, Option<i64>>(12)?
+            .map(|value| value.max(0) as u32),
+        result_bitrate: row
+            .get::<_, Option<i64>>(13)?
+            .map(|value| value.max(0) as u64),
+        result_file_size: row
+            .get::<_, Option<i64>>(14)?
+            .map(|value| value.max(0) as u64),
+        result_no_watermark: row.get::<_, Option<i64>>(15)?.map(|value| value != 0),
+        result_source_kind: row.get(16)?,
+        failure_code: row.get(17)?,
+        error_message: row.get(18)?,
+        deadline_at: row.get(19)?,
+        last_poll_at: row.get(20)?,
+        progress_percent: row.get::<_, i64>(21)?.clamp(0, 100) as u8,
+        attempt_count: row.get::<_, i64>(22)?.max(0) as u32,
+        lease_owner: row.get(23)?,
+        lease_expires_at: row.get(24)?,
+        next_retry_at: row.get(25)?,
+        created_at: row.get(26)?,
+        started_at: row.get(27)?,
+        completed_at: row.get(28)?,
+        updated_at: row.get(29)?,
     })
 }
 
 const GENERATION_JOB_SELECT: &str =
     "SELECT id, prompt, model, duration_seconds, ratio, status, profile_id, proxy_id,
-            external_task_id, result_url, failure_code, error_message, deadline_at,
-            last_poll_at, progress_percent, attempt_count, lease_owner, lease_expires_at,
-            next_retry_at, created_at, started_at, completed_at, updated_at
+            external_task_id, result_url, local_path, result_width, result_height,
+            result_bitrate, result_file_size, result_no_watermark, result_source_kind,
+            failure_code, error_message, deadline_at, last_poll_at, progress_percent,
+            attempt_count, lease_owner, lease_expires_at, next_retry_at, created_at,
+            started_at, completed_at, updated_at
      FROM generation_jobs";
 
 pub fn list_generation_jobs(db_path: &Path) -> Result<Vec<GenerationJob>, String> {
@@ -1429,7 +1501,7 @@ pub fn claim_adapter_job(
 
     let sql = format!(
         "{GENERATION_JOB_SELECT}
-         WHERE status IN ('assigned', 'recovering')
+         WHERE status IN ('assigned', 'recovering', 'starting', 'generating')
            AND profile_id IS NOT NULL
            AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?1)
            AND (next_retry_at IS NULL OR next_retry_at <= ?1)
@@ -1454,7 +1526,7 @@ pub fn claim_adapter_job(
                  attempt_count = attempt_count + 1,
                  updated_at = ?4
              WHERE id = ?5
-               AND status IN ('assigned', 'recovering')
+               AND status IN ('assigned', 'recovering', 'starting', 'generating')
                AND (lease_token IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?4)",
             params![
                 &lease_token,
@@ -1578,11 +1650,26 @@ pub fn complete_adapter_job(
     job_id: &str,
     lease_token: &str,
     result_url: &str,
+    local_path: Option<&str>,
+    width: Option<u32>,
+    height: Option<u32>,
+    bitrate: Option<u64>,
+    file_size: Option<u64>,
+    no_watermark: Option<bool>,
+    source_kind: Option<&str>,
 ) -> Result<GenerationJob, String> {
     let result_url = result_url.trim();
     if result_url.is_empty() {
         return Err("A result_url is required to complete a generation job.".into());
     }
+
+    let local_path = local_path.map(str::trim).filter(|value| !value.is_empty());
+    let source_kind = source_kind.map(str::trim).filter(|value| !value.is_empty());
+    let width = width.map(i64::from);
+    let height = height.map(i64::from);
+    let bitrate = bitrate.map(|value| value.min(i64::MAX as u64) as i64);
+    let file_size = file_size.map(|value| value.min(i64::MAX as u64) as i64);
+    let no_watermark = no_watermark.map(|value| i64::from(value));
 
     let before = get_generation_job(db_path, job_id)?
         .ok_or_else(|| "Generation job does not exist.".to_string())?;
@@ -1590,19 +1677,38 @@ pub fn complete_adapter_job(
     let sql = "UPDATE generation_jobs
          SET status = 'completed',
              result_url = ?1,
+             local_path = ?2,
+             result_width = ?3,
+             result_height = ?4,
+             result_bitrate = ?5,
+             result_file_size = ?6,
+             result_no_watermark = ?7,
+             result_source_kind = ?8,
              progress_percent = 100,
-             completed_at = ?2,
-             last_poll_at = ?2,
+             completed_at = ?9,
+             last_poll_at = ?9,
              failure_code = NULL,
              error_message = NULL,
              lease_token = NULL,
              lease_owner = NULL,
              lease_expires_at = NULL,
              next_retry_at = NULL,
-             updated_at = ?2
-         WHERE id = ?3 AND lease_token = ?4
+             updated_at = ?9
+         WHERE id = ?10 AND lease_token = ?11
            AND status IN ('assigned', 'recovering', 'starting', 'generating')";
-    let values: [&dyn rusqlite::ToSql; 4] = [&result_url, &now, &job_id, &lease_token];
+    let values: [&dyn rusqlite::ToSql; 11] = [
+        &result_url,
+        &local_path,
+        &width,
+        &height,
+        &bitrate,
+        &file_size,
+        &no_watermark,
+        &source_kind,
+        &now,
+        &job_id,
+        &lease_token,
+    ];
     let job = update_leased_job(db_path, job_id, sql, &values)?;
 
     if let Some(profile_id) = before.profile_id.as_deref() {

@@ -91,35 +91,59 @@ Automatic Seedance website interaction itself remains isolated in the adapter la
 
 The repository includes a dependency-free Node.js adapter under `adapter/`. It connects only to the gateway's loopback API and to the loopback Chrome DevTools endpoint created for the leased profile.
 
-Before starting it:
+### Recommended: one-click runtime
 
-1. In **Profiles**, mark usable logged-in profiles as **Ready** and turn **Smart Scheduler** ON.
-2. In **Queue**, turn the **Allocation Worker** and **Local API** ON.
-3. Click **Reveal key** in the Local API card.
-4. Open Command Prompt in the project folder:
+1. In **Profiles**, mark usable logged-in profiles as **Ready**.
+2. Open **Queue**.
+3. In **Automation Runtime**, choose concurrency/timeout settings if needed.
+4. Turn **Automation Runtime** ON.
+
+The app then starts **Smart Scheduler -> Local API -> Profile Allocator -> Seedance Adapter** in the correct order and passes the gateway key to the child process internally. The Local API key does not need to be revealed for normal use. Adapter output is available from **View logs** in the same card.
+
+The adapter scripts are bundled as Tauri resources for packaged builds. Node.js 20+ still needs to be available on the machine; the runtime card reports `Node READY` or `Node MISSING`.
+
+### Manual/debug fallback
+
+The old manual launcher remains available for troubleshooting:
 
 ```cmd
 set DOLA_GATEWAY_KEY=YOUR_REVEALED_KEY
 START_ADAPTER.bat
 ```
 
-Or run it directly:
+Or:
 
 ```cmd
 set DOLA_GATEWAY_KEY=YOUR_REVEALED_KEY
 npm run adapter
 ```
 
-Useful optional environment settings:
+Useful optional environment settings for manual mode:
 
 ```text
 DOLA_GATEWAY_URL=http://127.0.0.1:8787
 DOLA_ADAPTER_CONCURRENCY=1
 DOLA_ADAPTER_TIMEOUT_SECONDS=1200
 DOLA_ADAPTER_MANUAL_VERIFICATION_SECONDS=180
+DOLA_DOWNLOAD_DIR=C:\\path\\to\\downloads
 ```
 
-The adapter currently automates the normal Dola UI flow for Seedance 2.0/2.5: open the persistent profile, verify that the chat composer is available, open video generation, select model/ratio/duration, submit the prompt, capture the resulting conversation ID, then monitor the conversation for a browser-visible video result. Dola durations supported by this adapter are **10s, 15s, and 30s**.
+The adapter currently automates the normal Dola UI flow for Seedance 2.0/2.5: open the persistent profile, verify that the chat composer is available, open video generation, select model/ratio/duration, submit the prompt, capture the resulting conversation ID, then monitor the conversation for the generated video. Dola durations supported by this adapter are **10s, 15s, and 30s**.
+
+### Original / high-quality result extraction
+
+When Dola returns a completed video, the adapter now reads both `download_url` and `video_model`. It parses `video_model.video_list`, base64-decodes its `main_url` entries, and treats those entries as the original-stream candidates. Selection order is:
+
+1. Dola `video_model` original-stream candidates before the generic `download_url`.
+2. Highest actual resolution when width/height metadata is available.
+3. Resolution/quality hints when present.
+4. Highest bitrate as the final quality tie-breaker.
+
+Before completion, the selected URL is also loaded as video metadata inside the assigned Chrome session so the job can record the actual browser-visible `videoWidth × videoHeight` when the CDN permits metadata probing. This is what the Queue uses to identify a real **1080-class** output rather than inferring 1080p from bitrate alone.
+
+The selected stream is downloaded automatically. Managed Automation Runtime stores completed files under the app-data `downloads` directory; manual adapter mode can override this with `DOLA_DOWNLOAD_DIR`. The job stores the local path, file size, resolution, bitrate, source kind, and whether the selected source came from the original/no-watermark-priority `video_model` path. If that original candidate cannot be downloaded, the adapter falls back to Dola's `download_url` and does **not** mark the fallback as no-watermark.
+
+This is source selection, not post-processing: the gateway does not crop, blur, inpaint, or otherwise remove a watermark from an already-watermarked video.
 
 The adapter does **not** extract login cookies and does **not** solve verification challenges. If Dola displays a verification/captcha frame, the visible Chrome window stays open for the configured manual-verification window while the adapter keeps the job lease alive. If verification is not completed, the job is returned to the retry flow with a cooldown.
 
