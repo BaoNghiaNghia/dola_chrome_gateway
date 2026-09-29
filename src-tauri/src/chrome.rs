@@ -672,8 +672,12 @@ fn force_close_process_tree(_pid: u32) -> Result<(), String> {
 }
 
 pub fn close_profile(profile_path: &Path, known_pid: Option<u32>) -> Result<(), String> {
-    let pid = find_profile_pid(profile_path)?
-        .or_else(|| known_pid.filter(|pid| is_pid_running(*pid)));
+    // Prefer the PID already tracked by AppState. Only fall back to an
+    // expensive command-line discovery when the cached PID is unavailable.
+    let pid = match known_pid.filter(|pid| is_pid_running(*pid)) {
+        Some(pid) => Some(pid),
+        None => find_profile_pid(profile_path)?,
+    };
 
     let Some(pid) = pid else {
         let _ = mark_profile_shutdown_clean(profile_path);

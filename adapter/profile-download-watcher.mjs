@@ -16,6 +16,10 @@ const browserPid = Number(process.argv[4] || 0);
 const outputDir = process.env.DOLA_DOWNLOAD_DIR || "";
 const statusFile = process.env.DOLA_PROFILE_STATUS_FILE || "";
 const pollMs = Math.max(3_000, Number(process.env.DOLA_PROFILE_WATCHER_POLL_MS || 5_000));
+const conversationRefreshMs = Math.max(
+  15_000,
+  Number(process.env.DOLA_PROFILE_CONVERSATION_REFRESH_MS || 30_000),
+);
 
 if (!browserWebsocketUrl) {
   console.error("[profile-watcher] Missing browser websocket URL.");
@@ -26,6 +30,7 @@ const cdp = new CdpClient(browserWebsocketUrl);
 const downloadedUrls = new Set();
 let consecutiveCdpFailures = 0;
 let activeConversationId = null;
+let lastConversationRefreshAt = 0;
 
 function log(message) {
   console.log(
@@ -111,14 +116,24 @@ try {
 
   while (true) {
     try {
-      if (!activeConversationId) {
+      const now = Date.now();
+      if (
+        !activeConversationId ||
+        now - lastConversationRefreshAt >= conversationRefreshMs
+      ) {
         const state = await driver.snapshot();
-        activeConversationId = extractConversationId(state?.url);
+        const nextConversationId = extractConversationId(state?.url);
+        lastConversationRefreshAt = now;
+
+        if (nextConversationId && nextConversationId !== activeConversationId) {
+          activeConversationId = nextConversationId;
+          log(`watching conversation ${activeConversationId}`);
+        }
+
         if (!activeConversationId) {
           await delay(pollMs);
           continue;
         }
-        log(`watching conversation ${activeConversationId}`);
       }
       consecutiveCdpFailures = 0;
 

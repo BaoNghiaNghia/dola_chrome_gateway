@@ -57,10 +57,34 @@ Assert-Command -Name "node" -InstallHint "Install Node.js 20+ and reopen the ter
 Assert-Command -Name "npm" -InstallHint "Install Node.js/npm and reopen the terminal."
 Assert-Command -Name "cargo" -InstallHint "Install Rust from https://rustup.rs and reopen the terminal."
 
+$BuildCacheScript = Join-Path $PSScriptRoot "build-cache.ps1"
+$FrontendPrebuilt = $false
+
 if (-not $SkipChecks) {
-  Invoke-Step -Title "Running project checks" -Command {
-    & npm.cmd run check
+  $PortableAlreadyVerified = $false
+  if (Test-Path $BuildCacheScript -PathType Leaf) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $BuildCacheScript -Action check -Kind portable
+    $PortableAlreadyVerified = ($LASTEXITCODE -eq 0)
   }
+
+  if ($PortableAlreadyVerified) {
+    Write-Host ""
+    Write-Host "==> Project checks already verified for current source" -ForegroundColor Cyan
+    $FrontendPrebuilt = (Test-Path (Join-Path $Root "dist\index.html") -PathType Leaf)
+  } else {
+    Invoke-Step -Title "Running project checks" -Command {
+      & npm.cmd run check
+    }
+    $FrontendPrebuilt = $true
+  }
+}
+
+# When project checks have already produced the current frontend, tell Tauri's
+# beforeBuildCommand to reuse dist instead of invoking the frontend build again.
+if ($FrontendPrebuilt) {
+  $env:DOLA_FRONTEND_PREBUILT = "1"
+} else {
+  Remove-Item Env:DOLA_FRONTEND_PREBUILT -ErrorAction SilentlyContinue
 }
 
 if ($PortableOnly) {
@@ -135,7 +159,6 @@ if (-not $Artifacts) {
   throw "Build completed, but no Windows artifacts were collected."
 }
 
-$BuildCacheScript = Join-Path $PSScriptRoot "build-cache.ps1"
 if (Test-Path $BuildCacheScript -PathType Leaf) {
   & powershell -NoProfile -ExecutionPolicy Bypass -File $BuildCacheScript -Action write -Kind portable
   if ($LASTEXITCODE -ne 0) {
