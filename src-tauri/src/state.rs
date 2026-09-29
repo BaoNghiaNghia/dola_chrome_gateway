@@ -1,4 +1,6 @@
-use crate::adapter_runtime::{AdapterProcessRuntime, AdapterRuntimeConfig};
+use crate::adapter_runtime::{
+    AdapterProcessRuntime, AdapterRuntimeConfig, ProfileDownloadWatcherRuntime,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,6 +43,7 @@ pub struct AppState {
     pub api_runtime: Mutex<Option<BackgroundRuntime>>,
     pub worker_runtime: Mutex<Option<BackgroundRuntime>>,
     pub adapter_runtime: Mutex<Option<AdapterProcessRuntime>>,
+    pub profile_download_watchers: Mutex<HashMap<String, ProfileDownloadWatcherRuntime>>,
     pub adapter_config: Mutex<AdapterRuntimeConfig>,
     pub adapter_last_error: Mutex<Option<String>>,
 }
@@ -61,6 +64,7 @@ impl AppState {
             api_runtime: Mutex::new(None),
             worker_runtime: Mutex::new(None),
             adapter_runtime: Mutex::new(None),
+            profile_download_watchers: Mutex::new(HashMap::new()),
             adapter_config: Mutex::new(AdapterRuntimeConfig::default()),
             adapter_last_error: Mutex::new(None),
         }

@@ -475,6 +475,62 @@ export class SeedanceDriver {
           const texts = [];
           const videos = [];
           const videoModels = [];
+          const seenVideos = new Set();
+          const seenModels = new Set();
+
+          const pushVideo = (value) => {
+            if (typeof value !== "string" || !/^https?:\\/\\//i.test(value)) return;
+            if (seenVideos.has(value)) return;
+            seenVideos.add(value);
+            videos.push(value);
+          };
+
+          const pushVideoModel = (value) => {
+            if (!value) return;
+            let key;
+            try {
+              key = typeof value === "string" ? value : JSON.stringify(value);
+            } catch {
+              return;
+            }
+            if (!key || seenModels.has(key)) return;
+            seenModels.add(key);
+            videoModels.push(value);
+          };
+
+          const scan = (value, depth = 0) => {
+            if (!value || depth > 12) return;
+
+            if (typeof value === "string") {
+              const trimmed = value.trim();
+              if (
+                (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
+                trimmed.length <= 2_000_000
+              ) {
+                try {
+                  scan(JSON.parse(trimmed), depth + 1);
+                } catch {}
+              }
+              return;
+            }
+
+            if (Array.isArray(value)) {
+              for (const item of value) scan(item, depth + 1);
+              return;
+            }
+            if (typeof value !== "object") return;
+
+            pushVideoModel(value.video_model);
+            pushVideoModel(value.videoModel);
+            pushVideo(value.download_url);
+            pushVideo(value.downloadUrl);
+            pushVideo(value.play_url);
+            pushVideo(value.playUrl);
+
+            for (const nested of Object.values(value)) {
+              scan(nested, depth + 1);
+            }
+          };
 
           for (const message of messages) {
             let content = message?.content;
@@ -485,25 +541,19 @@ export class SeedanceDriver {
                 continue;
               }
             }
-            if (!Array.isArray(content)) continue;
 
+            scan(content);
+
+            if (!Array.isArray(content)) continue;
             for (const block of content) {
               const messageText = block?.content?.text_block?.text;
               if (messageText) texts.push(String(messageText).slice(0, 500));
-
-              if (block?.block_type !== 2074) continue;
-              const creations = block?.content?.creation_block?.creations || [];
-              for (const creation of creations) {
-                if (creation?.type !== 2) continue;
-                const video = creation?.video || {};
-                const url = video.download_url;
-                if (typeof url === "string" && /^https?:\\/\\//i.test(url)) {
-                  videos.push(url);
-                  videoModels.push(video.video_model || "");
-                }
-              }
             }
           }
+
+          // Dola can move creation metadata between response branches across releases.
+          // Scan the complete payload so video_model is independent from download_url.
+          scan(data);
 
           return {
             ok: true,
@@ -637,17 +687,9 @@ export class SeedanceDriver {
         /^https?:\/\//i.test(url),
       );
       if (domResultUrl) {
-        return this.finalizeVideoCandidate({
-          url: domResultUrl,
-          fallbackUrl: null,
-          sourceKind: "dom",
-          noWatermark: false,
-          width: null,
-          height: null,
-          bitrate: 0,
-          resolutionHint: 0,
-          candidateCount: 0,
-        });
+        this.log(
+          "[adapter] A preview/download URL is visible, but the clean original stream is not available yet; continuing to poll.",
+        );
       }
 
       const elapsed = Date.now() - startedAt;
@@ -665,7 +707,7 @@ export class SeedanceDriver {
 
     throw new AdapterError(
       "generation_timeout",
-      `Seedance generation did not expose a result within ${Math.round(
+      `Seedance generation did not expose a clean original no-watermark stream within ${Math.round(
         effectiveTimeout / 1000,
       )}s.`,
       { retryable: true, retryAfterSeconds: 120 },

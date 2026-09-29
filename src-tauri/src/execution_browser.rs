@@ -25,7 +25,7 @@ fn pool_item_settings(item: &ProxyPoolItem) -> ProxySettings {
 
 fn validate_start_url(start_url: Option<&str>) -> Result<Option<String>, String> {
     let Some(raw) = start_url.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
+        return Ok(Some(chrome::DEFAULT_START_URL.to_string()));
     };
 
     if raw == "about:blank" || raw.starts_with("https://") || raw.starts_with("http://") {
@@ -50,6 +50,26 @@ fn sync_running_profiles(db_path: &Path) -> Result<Vec<String>, String> {
     let running_ids = discovered.keys().cloned().collect::<Vec<_>>();
     db::release_stale_proxy_assignments(db_path, &running_ids)?;
     Ok(running_ids)
+}
+
+fn tile_running_profiles(db_path: &Path) -> Result<(), String> {
+    let profiles = db::list_profiles(db_path)?;
+    let paths = profiles
+        .iter()
+        .map(|profile| {
+            (
+                profile.id.clone(),
+                PathBuf::from(profile.profile_path.as_str()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let discovered = chrome::discover_profile_pids(&paths)?;
+    let pids = profiles
+        .iter()
+        .filter_map(|profile| discovered.get(&profile.id).copied())
+        .collect::<Vec<_>>();
+    chrome::tile_windows(&pids);
+    Ok(())
 }
 
 fn prepare_proxy_for_profile(db_path: &Path, profile_id: &str) -> Result<ProxySettings, String> {
@@ -149,18 +169,23 @@ pub fn open(
         prepare_proxy_for_profile(db_path, profile_id)?
     };
 
-    let browser =
-        match chrome::launch_debuggable(&profile_path, start_url.as_deref(), &effective_proxy) {
-            Ok(browser) => browser,
-            Err(error) => {
-                if !already_running {
-                    let _ = db::release_profile_proxy_assignment(db_path, profile_id);
-                }
-                return Err(error);
+    let browser = match chrome::launch_debuggable(
+        &profile_path,
+        start_url.as_deref(),
+        &effective_proxy,
+        running_ids.len(),
+    ) {
+        Ok(browser) => browser,
+        Err(error) => {
+            if !already_running {
+                let _ = db::release_profile_proxy_assignment(db_path, profile_id);
             }
-        };
+            return Err(error);
+        }
+    };
 
     db::touch_last_opened(db_path, profile_id)?;
+    tile_running_profiles(db_path)?;
     let refreshed = db::get_profile(db_path, profile_id)?
         .ok_or_else(|| "Execution profile disappeared after launch.".to_string())?;
 
@@ -187,6 +212,7 @@ pub fn close(db_path: &Path, job_id: &str, lease_token: &str) -> Result<(), Stri
 
     chrome::close_profile(&profile_path, pid)?;
     db::release_profile_proxy_assignment(db_path, profile_id)?;
+    tile_running_profiles(db_path)?;
     Ok(())
 }
 

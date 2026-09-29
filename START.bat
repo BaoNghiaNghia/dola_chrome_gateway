@@ -44,6 +44,11 @@ if not exist "node_modules\." (
   if errorlevel 1 goto :failed
 )
 
+where git >nul 2>nul
+if not errorlevel 1 (
+  git config core.hooksPath .githooks >nul 2>nul
+)
+
 echo.
 echo [Dola] Starting Chrome Gateway...
 echo [Dola] Close this terminal only when you want to stop the development app.

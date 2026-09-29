@@ -612,6 +612,39 @@ button:disabled {
   font-weight: 800;
 }
 
+.account-type-avatar {
+  overflow: hidden;
+  border: 1px solid #e7e8ef;
+  background: #f7f7fb;
+}
+
+.account-type-avatar img {
+  width: 20px;
+  height: 20px;
+  display: block;
+  object-fit: contain;
+}
+
+.account-type-avatar.facebook {
+  border-color: #dbe8ff;
+  background: #f3f7ff;
+}
+
+.account-type-avatar.gmail {
+  border-color: #f0e3e0;
+  background: #fffafa;
+}
+
+.account-type-avatar.apple_id {
+  border-color: #e4e6ea;
+  background: #f7f8fa;
+}
+
+.profile-list.compact .account-type-avatar img {
+  width: 17px;
+  height: 17px;
+}
+
 .profile-cell strong,
 .profile-cell span {
   display: block;
@@ -653,6 +686,62 @@ button:disabled {
 .run-status.running i {
   background: #47c68d;
   box-shadow: 0 0 0 3px rgba(71, 198, 141, 0.1);
+}
+
+.profile-status-stack {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.download-status {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.download-status.downloaded {
+  color: #25815d;
+}
+
+.download-status.downloaded b {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: #47c68d;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.download-status small {
+  overflow: hidden;
+  max-width: 54px;
+  color: #8b94a3;
+  font-size: 8px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.profile-list.compact .profile-status-stack {
+  gap: 3px;
+}
+
+.profile-list.compact .download-status {
+  font-size: 8px;
+}
+
+.profile-list.compact .download-status.downloaded b {
+  width: 12px;
+  height: 12px;
+  font-size: 8px;
 }
 
 .muted {
@@ -711,8 +800,26 @@ button:disabled {
   font-size: 8px;
 }
 
+.profiles-panel {
+  overflow: visible;
+}
+
 .profile-action-menu {
   position: relative;
+}
+
+.profile-action-menu[open] {
+  z-index: 60;
+}
+
+.profile-row:has(.profile-action-menu[open]) {
+  position: relative;
+  z-index: 50;
+}
+
+.profile-row:last-child .profile-action-popover {
+  top: auto;
+  bottom: 34px;
 }
 
 .profile-action-menu > summary {
@@ -1794,6 +1901,71 @@ button:disabled {
   gap: 10px;
 }
 
+.automation-master-compact {
+  padding: 12px 14px;
+}
+
+.automation-master-compact .automation-master-head {
+  align-items: center;
+}
+
+.automation-master-compact .automation-logo {
+  width: 34px;
+  height: 34px;
+  padding: 4px;
+  border-radius: 9px;
+}
+
+.automation-master-compact .automation-master-title {
+  align-items: center;
+  gap: 10px;
+}
+
+.automation-master-compact .automation-master-title h3 {
+  margin: 1px 0 2px;
+  font-size: 12px;
+}
+
+.automation-master-compact .automation-master-title p {
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.automation-master-primary-action {
+  flex: 0 0 auto;
+}
+
+.automation-master-primary-action .button {
+  min-width: 72px;
+}
+
+.automation-master-compact .automation-dependencies {
+  margin-top: 9px;
+}
+
+.automation-master-compact .dependency-chip {
+  padding: 4px 7px;
+}
+
+.automation-advanced-settings {
+  padding: 0 12px 10px;
+  border-bottom: 1px solid #eceef3;
+}
+
+.automation-advanced-settings .automation-config-grid {
+  margin-top: 0;
+  padding-top: 10px;
+}
+
+.automation-advanced-settings .automation-meta {
+  margin-top: 9px;
+  grid-template-columns: 90px 120px 100px;
+}
+
+.automation-advanced-settings .automation-actions {
+  margin-top: 9px;
+}
+
 .automation-dependencies {
   margin-top: 14px;
   display: flex;
@@ -2673,5 +2845,584 @@ button:disabled {
   .job-row {
     grid-template-columns: minmax(220px, 1.5fr) 100px 82px 145px;
     gap: 9px;
+  }
+}
+
+/* Compact application density
+   Keep every existing action and state, but reduce persistent chrome so more
+   operational information fits in the viewport at once. */
+.app-shell {
+  grid-template-columns: 212px minmax(0, 1fr);
+}
+
+.sidebar {
+  padding: 16px 12px 14px;
+}
+
+.brand {
+  gap: 9px;
+  padding: 0 6px 17px;
+}
+
+.brand-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.brand strong {
+  font-size: 12px;
+}
+
+.brand span {
+  margin-top: 1px;
+  font-size: 9px;
+}
+
+.nav-item {
+  height: 36px;
+  padding: 0 9px;
+  grid-template-columns: 20px 1fr auto;
+  gap: 6px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.nav-icon {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
+
+.nav-icon img {
+  width: 18px;
+  height: 18px;
+}
+
+.nav-item b {
+  padding: 2px 6px;
+  font-size: 9px;
+}
+
+.sidebar-workspaces {
+  margin-top: 14px;
+  padding-top: 7px;
+}
+
+.sidebar-workspaces > summary {
+  min-height: 29px;
+  padding: 0 8px;
+  font-size: 9px;
+}
+
+.workspace-open {
+  padding: 6px 6px 6px 9px;
+  gap: 7px;
+}
+
+.workspace-open > span:last-child {
+  font-size: 10px;
+}
+
+.workspace-open small {
+  margin-top: 1px;
+  font-size: 8px;
+}
+
+.sidebar-empty {
+  margin: 7px 9px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.sidebar-status {
+  margin-top: 12px;
+  padding: 9px 10px;
+  gap: 7px;
+  border-radius: 9px;
+}
+
+.sidebar-status strong {
+  font-size: 10px;
+}
+
+.sidebar-status span {
+  margin-top: 1px;
+  font-size: 8px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 3px rgba(235, 140, 101, 0.1);
+}
+
+.status-dot.online {
+  box-shadow: 0 0 0 3px rgba(83, 212, 155, 0.11);
+}
+
+.content {
+  padding: 22px 26px 18px;
+}
+
+.topbar {
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.eyebrow {
+  font-size: 8px;
+  letter-spacing: .1em;
+}
+
+.topbar h1 {
+  margin: 3px 0 2px;
+  font-size: 24px;
+}
+
+.topbar p {
+  font-size: 10px;
+}
+
+.button {
+  min-height: 32px;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.plus {
+  margin-right: 3px;
+  font-size: 13px;
+}
+
+.banner {
+  margin: -2px 0 12px;
+  padding: 8px 10px;
+  font-size: 10px;
+}
+
+.stats-grid,
+.proxy-stats {
+  margin-bottom: 12px;
+  gap: 8px;
+}
+
+.stat-card {
+  padding: 11px 12px;
+  border-radius: 10px;
+}
+
+.stat-card span {
+  font-size: 9px;
+}
+
+.stat-card strong {
+  margin: 4px 0 2px;
+  font-size: 18px;
+}
+
+.stat-card small {
+  font-size: 8px;
+}
+
+.panel {
+  border-radius: 11px;
+}
+
+.toolbar {
+  min-height: 50px;
+  padding: 8px 10px;
+  gap: 7px;
+}
+
+.search-box {
+  width: min(320px, 32vw);
+  height: 32px;
+  padding: 0 9px;
+  gap: 6px;
+  border-radius: 8px;
+}
+
+.search-box span {
+  font-size: 15px;
+}
+
+.search-box input,
+.toolbar select {
+  font-size: 10px;
+}
+
+.toolbar select {
+  height: 32px;
+  padding: 0 26px 0 9px;
+  border-radius: 8px;
+}
+
+.density-button {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 8px;
+}
+
+.selected-count {
+  font-size: 9px;
+}
+
+.workspace-builder {
+  min-height: 43px;
+  padding: 6px 10px;
+  gap: 7px;
+  font-size: 9px;
+}
+
+.workspace-builder input {
+  width: 190px;
+  height: 30px;
+  font-size: 9px;
+}
+
+.table-head {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 8px;
+}
+
+.profile-row {
+  min-height: 57px;
+  padding: 7px 12px;
+  font-size: 10px;
+}
+
+.profile-list.compact .profile-row {
+  min-height: 45px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.avatar {
+  width: 31px;
+  height: 31px;
+  border-radius: 8px;
+  font-size: 9px;
+}
+
+.profile-cell {
+  gap: 8px;
+}
+
+.profile-cell strong {
+  font-size: 10px;
+}
+
+.profile-cell span {
+  margin-top: 1px;
+  font-size: 8px;
+}
+
+.mini-button,
+.dots-button {
+  height: 26px;
+  border-radius: 6px;
+  font-size: 9px;
+}
+
+.mini-button {
+  padding: 0 8px;
+}
+
+.dots-button {
+  width: 27px;
+  font-size: 13px;
+}
+
+.scheduler-advanced-card,
+.advanced-runtime-details {
+  margin-bottom: 10px;
+  border-radius: 9px;
+}
+
+.scheduler-advanced-card > summary,
+.advanced-runtime-details > summary {
+  min-height: 33px;
+  padding-left: 10px;
+  padding-right: 10px;
+  font-size: 9px;
+}
+
+.scheduler-advanced-body {
+  padding: 8px 10px 10px;
+}
+
+.proxy-master-card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  gap: 16px;
+  border-radius: 11px;
+}
+
+.proxy-master-card h3 {
+  margin: 2px 0 3px;
+  font-size: 16px;
+}
+
+.proxy-master-card p {
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.proxy-pool-head {
+  min-height: 50px;
+  padding: 10px 12px;
+}
+
+.proxy-pool-head strong {
+  font-size: 10px;
+}
+
+.proxy-pool-head div > span {
+  margin-top: 2px;
+  font-size: 8px;
+}
+
+.proxy-table-head {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 8px;
+}
+
+.proxy-row {
+  min-height: 55px;
+  padding: 7px 12px;
+  font-size: 9px;
+}
+
+.proxy-name-cell {
+  gap: 7px;
+}
+
+.proxy-name-cell strong {
+  font-size: 10px;
+}
+
+.proxy-name-cell span {
+  margin-top: 1px;
+  font-size: 8px;
+}
+
+.automation-master-card {
+  margin-bottom: 10px;
+  padding: 12px;
+  border-radius: 11px;
+}
+
+.automation-master-head {
+  gap: 12px;
+}
+
+.automation-master-title {
+  gap: 9px;
+}
+
+.automation-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.automation-master-title h3 {
+  margin: 1px 0 2px;
+  font-size: 12px;
+}
+
+.automation-master-title p {
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.automation-dependencies,
+.automation-config-grid,
+.automation-meta {
+  margin-top: 9px;
+}
+
+.automation-config-grid {
+  gap: 7px;
+}
+
+.automation-config-grid select,
+.automation-save-button {
+  height: 29px;
+}
+
+.automation-meta > div {
+  padding: 6px 7px;
+  border-radius: 7px;
+}
+
+.automation-actions {
+  margin-top: 9px;
+  gap: 6px;
+}
+
+.runtime-grid {
+  margin-bottom: 11px;
+  gap: 9px;
+}
+
+.runtime-card {
+  padding: 11px 12px;
+  border-radius: 10px;
+}
+
+.runtime-card h3 {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.runtime-card > p {
+  margin: 4px 0 8px;
+  font-size: 8px;
+}
+
+.runtime-row {
+  min-height: 28px;
+  font-size: 8px;
+}
+
+.runtime-actions {
+  margin-top: 8px;
+}
+
+.queue-create-card {
+  margin-bottom: 11px;
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.queue-create-heading {
+  margin-bottom: 9px;
+}
+
+.queue-create-card textarea,
+.queue-create-card select {
+  margin-top: 4px;
+  padding: 7px 8px;
+  font-size: 10px;
+}
+
+.queue-form-grid {
+  margin-top: 8px;
+  gap: 7px;
+}
+
+.queue-create-actions {
+  margin-top: 10px;
+}
+
+.queue-panel-head {
+  min-height: 48px;
+  padding: 9px 12px;
+}
+
+.queue-search-box,
+.queue-sort-select {
+  height: 29px;
+}
+
+.queue-filter-bar {
+  padding: 6px 12px;
+  gap: 5px;
+}
+
+.queue-filter {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 8px;
+}
+
+.job-row {
+  min-height: 64px;
+  padding: 8px 12px;
+  gap: 10px;
+}
+
+.job-main strong {
+  margin-top: 3px;
+  font-size: 10px;
+}
+
+.job-main small,
+.job-meta-inline,
+.job-result-meta {
+  margin-top: 3px;
+}
+
+.modal-backdrop {
+  padding: 18px;
+}
+
+.modal-card {
+  width: min(560px, 90vw);
+  padding: 17px;
+  border-radius: 12px;
+}
+
+.modal-heading {
+  margin-bottom: 13px;
+  gap: 14px;
+}
+
+.modal-heading h2 {
+  margin-top: 3px;
+  font-size: 18px;
+}
+
+.modal-heading p {
+  font-size: 10px;
+}
+
+.modal-card label {
+  margin-bottom: 9px;
+}
+
+.modal-card label,
+.field-label {
+  font-size: 10px;
+}
+
+.modal-card input,
+.modal-card textarea,
+.modal-card select {
+  margin-top: 4px;
+  padding: 7px 8px;
+  font-size: 10px;
+}
+
+.form-grid {
+  gap: 8px;
+}
+
+.modal-actions {
+  margin-top: 12px;
+  padding-top: 11px;
+}
+
+.profile-create-card {
+  width: min(500px, 90vw);
+}
+
+.profile-create-grid {
+  grid-template-columns: minmax(0, 1.55fr) minmax(150px, .7fr);
+}
+
+@media (max-width: 1180px) {
+  .app-shell {
+    grid-template-columns: 198px minmax(0, 1fr);
+  }
+
+  .content {
+    padding: 18px 18px 14px;
   }
 }

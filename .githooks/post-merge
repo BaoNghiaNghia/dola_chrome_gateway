@@ -1,0 +1,12 @@
+#!/bin/sh
+
+if [ "$DOLA_SKIP_AUTO_BUILD" = "1" ]; then
+  echo "[Dola] Auto-build skipped because DOLA_SKIP_AUTO_BUILD=1."
+  exit 0
+fi
+
+echo "[Dola] Repository changed after merge/pull. Rebuilding portable tool..."
+npm run build:portable || {
+  echo "[Dola] WARNING: portable rebuild failed after merge. Run npm run build:portable manually."
+  exit 0
+}

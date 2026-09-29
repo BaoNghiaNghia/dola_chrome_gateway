@@ -7,9 +7,13 @@
     "start": "tauri dev",
     "dev": "vite",
     "build": "tsc && vite build",
+    "check": "npm run build && cargo check --manifest-path src-tauri/Cargo.toml && npm run adapter:test",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -PortableOnly",
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "setup:autobuild": "git config core.hooksPath .githooks",
     "preview": "vite preview",
     "adapter": "node adapter/seedance-adapter.mjs",
-    "adapter:test": "node --check adapter/seedance-adapter.mjs && node --check adapter/gateway.mjs && node --check adapter/cdp.mjs && node --check adapter/seedance-driver.mjs && node --check adapter/video-result.mjs && node --test adapter/*.test.mjs",
+    "adapter:test": "node --check adapter/seedance-adapter.mjs && node --check adapter/profile-download-watcher.mjs && node --check adapter/gateway.mjs && node --check adapter/cdp.mjs && node --check adapter/seedance-driver.mjs && node --check adapter/video-result.mjs && node --test adapter/*.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

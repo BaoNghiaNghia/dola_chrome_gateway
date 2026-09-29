@@ -46,7 +46,8 @@ test("prefers higher resolution original stream before bitrate", () => {
   assert.equal(result.height, 1080);
   assert.equal(result.noWatermark, true);
   assert.equal(result.sourceKind, "video_model");
-  assert.equal(result.fallbackUrl, "https://cdn.example.test/fallback.mp4");
+  assert.equal(result.alternates.length, 1);
+  assert.equal(result.alternates[0].url, "https://cdn.example.test/720.mp4");
 });
 
 test("uses highest bitrate original stream when resolution metadata is absent", () => {
@@ -68,15 +69,51 @@ test("uses highest bitrate original stream when resolution metadata is absent", 
   assert.equal(candidates[0].bitrate, 9_000_000);
 });
 
-test("falls back to Dola download_url when no original stream exists", () => {
+test("does not accept Dola download_url when no clean original stream exists", () => {
   const result = selectBestVideoResult(
     ["{}"],
     ["https://cdn.example.test/download.mp4"],
   );
 
-  assert.equal(result.url, "https://cdn.example.test/download.mp4");
-  assert.equal(result.sourceKind, "download_url");
-  assert.equal(result.noWatermark, false);
+  assert.equal(result, null);
+});
+
+test("selects the highest available clean quality even above 1080p", () => {
+  const model = JSON.stringify({
+    video_list: [
+      {
+        main_url: encoded("https://cdn.example.test/1080.mp4"),
+        width: 1920,
+        height: 1080,
+        bitrate: 10_000_000,
+      },
+      {
+        main_url: encoded("https://cdn.example.test/2160.mp4"),
+        width: 3840,
+        height: 2160,
+        bitrate: 18_000_000,
+      },
+      {
+        main_url: encoded("https://cdn.example.test/720.mp4"),
+        width: 1280,
+        height: 720,
+        bitrate: 12_000_000,
+      },
+    ],
+  });
+
+  const result = selectBestVideoResult([model], []);
+  assert.equal(result.url, "https://cdn.example.test/2160.mp4");
+  assert.equal(result.width, 3840);
+  assert.equal(result.height, 2160);
+  assert.equal(result.noWatermark, true);
+  assert.deepEqual(
+    result.alternates.map((candidate) => candidate.url),
+    [
+      "https://cdn.example.test/1080.mp4",
+      "https://cdn.example.test/720.mp4",
+    ],
+  );
 });
 
 test("blocks local and private download targets", () => {

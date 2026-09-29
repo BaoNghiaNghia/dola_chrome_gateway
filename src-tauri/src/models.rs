@@ -171,6 +171,9 @@ pub struct BrowserProfile {
     pub operational: ProfileOperationalState,
     pub is_running: bool,
     pub pid: Option<u32>,
+    pub latest_download_path: Option<String>,
+    pub latest_download_file_name: Option<String>,
+    pub latest_downloaded_at: Option<String>,
     pub last_opened_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -188,6 +191,13 @@ pub struct CreateProfileRequest {
     pub tags: Vec<String>,
     pub notes: Option<String>,
     pub proxy: Option<ProxySettingsRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProfileRequest {
+    pub account_label: String,
+    pub account_type: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,4 +447,8 @@ pub struct SystemInfo {
     pub chrome_path: Option<String>,
     pub data_dir: String,
     pub max_simultaneous_profiles: usize,
+    pub profile_storage_available: bool,
+    pub profile_storage_path: String,
+    pub profile_storage_error: Option<String>,
+    pub default_zoom_percent: u8,
 }

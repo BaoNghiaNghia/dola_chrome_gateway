@@ -15,6 +15,7 @@ import type {
   SchedulerState,
   SystemInfo,
   UpdateGenerationJobInput,
+  UpdateProfileInput,
   UpdateProfileOperationalStateInput,
   WorkerState,
   Workspace,
@@ -28,6 +29,10 @@ export async function getSystemInfo(): Promise<SystemInfo> {
       chromePath: null,
       dataDir: "Desktop app data directory",
       maxSimultaneousProfiles: 4,
+      profileStorageAvailable: true,
+      profileStoragePath: "Desktop app data directory",
+      profileStorageError: null,
+      defaultZoomPercent: 85,
     };
   }
   return invoke<SystemInfo>("get_system_info");
@@ -44,21 +49,37 @@ export async function createProfile(
   return invoke<BrowserProfile>("create_profile", { request });
 }
 
+export async function updateProfile(
+  profileId: string,
+  request: UpdateProfileInput,
+): Promise<BrowserProfile> {
+  return invoke<BrowserProfile>("update_profile", { profileId, request });
+}
+
 export async function deleteProfile(profileId: string): Promise<void> {
   return invoke("delete_profile", { profileId });
 }
 
+const DEFAULT_PROFILE_URL = "https://www.dola.com/chat";
+
 export async function openProfiles(profileIds: string[]): Promise<string[]> {
   return invoke<string[]>("open_profiles", {
     profileIds,
-    startUrl: "https://www.google.com/",
+    startUrl: DEFAULT_PROFILE_URL,
+  });
+}
+
+export async function openProfileLoginMode(profileId: string): Promise<void> {
+  return invoke("open_profile_login_mode", {
+    profileId,
+    startUrl: DEFAULT_PROFILE_URL,
   });
 }
 
 export async function openSmartProfiles(count = 4): Promise<string[]> {
   return invoke<string[]>("open_smart_profiles", {
     count,
-    startUrl: "https://www.google.com/",
+    startUrl: DEFAULT_PROFILE_URL,
   });
 }
 

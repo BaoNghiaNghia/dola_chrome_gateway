@@ -181,36 +181,16 @@ export function extractOriginalVideoCandidates(videoModels = []) {
   return candidates.sort(compareCandidates);
 }
 
-export function selectBestVideoResult(videoModels = [], fallbackUrls = []) {
+export function selectBestVideoResult(videoModels = [], _fallbackUrls = []) {
   const originals = extractOriginalVideoCandidates(videoModels);
-  const fallbackUrl = (fallbackUrls || []).find(
-    (url) => typeof url === "string" && /^https?:\/\//i.test(url),
-  );
+  if (originals.length === 0) return null;
 
-  if (originals.length > 0) {
-    const selected = originals[0];
-    return {
-      ...selected,
-      fallbackUrl: fallbackUrl && fallbackUrl !== selected.url ? fallbackUrl : null,
-      candidateCount: originals.length,
-    };
-  }
-
-  if (fallbackUrl) {
-    return {
-      url: fallbackUrl,
-      fallbackUrl: null,
-      sourceKind: "download_url",
-      noWatermark: false,
-      width: null,
-      height: null,
-      bitrate: 0,
-      resolutionHint: 0,
-      candidateCount: 0,
-    };
-  }
-
-  return null;
+  const [selected, ...alternates] = originals;
+  return {
+    ...selected,
+    alternates,
+    candidateCount: originals.length,
+  };
 }
 
 function isBlockedHost(hostname) {
@@ -357,6 +337,9 @@ async function downloadOnce(url, jobId, outputDir) {
 
 export async function downloadVideoResult(result, jobId, options = {}) {
   if (!result?.url) throw new Error("No video result URL is available.");
+  if (result.noWatermark !== true || result.sourceKind !== "video_model") {
+    throw new Error("Refusing to download a video result that is not a clean original stream.");
+  }
 
   const outputDir = path.resolve(
     options.outputDir ||
@@ -364,33 +347,38 @@ export async function downloadVideoResult(result, jobId, options = {}) {
       path.join(process.cwd(), "downloads"),
   );
 
-  try {
-    const downloaded = await downloadOnce(result.url, jobId, outputDir);
-    return {
-      ...result,
-      url: downloaded.usedUrl,
-      localPath: downloaded.localPath,
-      fileSize: downloaded.fileSize,
-    };
-  } catch (primaryError) {
-    if (!result.fallbackUrl || result.fallbackUrl === result.url) {
-      throw primaryError;
-    }
+  const cleanCandidates = [result, ...(result.alternates || [])].filter(
+    (candidate, index, all) =>
+      candidate?.url &&
+      candidate.noWatermark === true &&
+      candidate.sourceKind === "video_model" &&
+      all.findIndex((item) => item?.url === candidate.url) === index,
+  );
 
-    const downloaded = await downloadOnce(result.fallbackUrl, jobId, outputDir);
-    return {
-      ...result,
-      url: downloaded.usedUrl,
-      localPath: downloaded.localPath,
-      fileSize: downloaded.fileSize,
-      sourceKind: "download_url",
-      noWatermark: false,
-      width: null,
-      height: null,
-      bitrate: 0,
-      fallbackUsed: true,
-      primaryDownloadError:
-        primaryError instanceof Error ? primaryError.message : String(primaryError),
-    };
+  let firstError = null;
+  for (let index = 0; index < cleanCandidates.length; index += 1) {
+    const candidate = cleanCandidates[index];
+    try {
+      const downloaded = await downloadOnce(candidate.url, jobId, outputDir);
+      return {
+        ...candidate,
+        alternates: [],
+        candidateCount: cleanCandidates.length,
+        url: downloaded.usedUrl,
+        localPath: downloaded.localPath,
+        fileSize: downloaded.fileSize,
+        alternateUsed: index > 0,
+        higherQualityDownloadError:
+          index > 0 && firstError
+            ? firstError instanceof Error
+              ? firstError.message
+              : String(firstError)
+            : null,
+      };
+    } catch (error) {
+      if (!firstError) firstError = error;
+    }
   }
+
+  throw firstError || new Error("No clean original video stream could be downloaded.");
 }

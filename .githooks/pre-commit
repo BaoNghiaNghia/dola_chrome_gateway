@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ "$DOLA_SKIP_AUTO_BUILD" = "1" ]; then
+  echo "[Dola] Auto-build skipped because DOLA_SKIP_AUTO_BUILD=1."
+  exit 0
+fi
+
+echo "[Dola] Verifying and rebuilding portable tool before commit..."
+npm run build:portable
+
+echo "[Dola] Portable build passed."

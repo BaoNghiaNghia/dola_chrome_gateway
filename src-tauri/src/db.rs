@@ -3,7 +3,7 @@ use crate::models::{
     BrowserProfile, CreateGenerationJobRequest, CreateProfileRequest, GenerationJob,
     ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest, ProxySettings,
     ProxySettingsRequest, UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest,
-    Workspace,
+    UpdateProfileRequest, Workspace,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -391,6 +391,9 @@ fn row_to_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<BrowserProfile> {
         operational: ProfileOperationalState::default(),
         is_running: false,
         pid: None,
+        latest_download_path: None,
+        latest_download_file_name: None,
+        latest_downloaded_at: None,
         last_opened_at: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
@@ -929,6 +932,71 @@ pub fn create_profile(
 
     tx.commit().map_err(|e| e.to_string())?;
     get_profile(db_path, &id)?.ok_or_else(|| "Created profile could not be loaded.".into())
+}
+
+pub fn update_profile(
+    db_path: &Path,
+    profile_id: &str,
+    request: UpdateProfileRequest,
+) -> Result<BrowserProfile, String> {
+    let account_label = request.account_label.trim();
+    if account_label.is_empty() {
+        return Err("Email / account label is required.".into());
+    }
+
+    let account_type = request.account_type.trim().to_lowercase();
+    if !matches!(account_type.as_str(), "facebook" | "gmail" | "apple_id") {
+        return Err("Account type must be Facebook, Gmail, or Apple ID.".into());
+    }
+
+    let services_json =
+        serde_json::to_string(&vec![account_type]).map_err(|e| e.to_string())?;
+    let conn = connection(db_path)?;
+    let changed = conn
+        .execute(
+            "UPDATE profiles
+             SET name = ?1, email = ?2, services_json = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                account_label,
+                account_label,
+                services_json,
+                Utc::now().to_rfc3339(),
+                profile_id
+            ],
+        )
+        .map_err(|e| format!("Cannot update profile: {e}"))?;
+
+    if changed == 0 {
+        return Err("Profile does not exist.".into());
+    }
+
+    get_profile(db_path, profile_id)?
+        .ok_or_else(|| "Updated profile could not be loaded.".into())
+}
+
+pub fn update_profile_path(
+    db_path: &Path,
+    profile_id: &str,
+    profile_path: &Path,
+) -> Result<(), String> {
+    let conn = connection(db_path)?;
+    let changed = conn
+        .execute(
+            "UPDATE profiles SET profile_path = ?1, updated_at = ?2 WHERE id = ?3",
+            params![
+                profile_path.to_string_lossy().to_string(),
+                Utc::now().to_rfc3339(),
+                profile_id
+            ],
+        )
+        .map_err(|e| format!("Cannot update profile storage path: {e}"))?;
+
+    if changed == 0 {
+        return Err("Profile does not exist.".into());
+    }
+
+    Ok(())
 }
 
 pub fn update_proxy_settings(

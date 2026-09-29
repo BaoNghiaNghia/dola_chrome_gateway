@@ -78,6 +78,28 @@ pub struct AdapterProcessRuntime {
     pub started_at: String,
 }
 
+pub struct ProfileDownloadWatcherRuntime {
+    child: Child,
+}
+
+impl ProfileDownloadWatcherRuntime {
+    pub fn stop(mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for ProfileDownloadWatcherRuntime {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 impl AdapterProcessRuntime {
     pub fn pid(&self) -> u32 {
         self.child.id()
@@ -143,33 +165,184 @@ pub fn find_node_executable() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub fn resolve_adapter_script(resource_dir: &Path) -> Result<PathBuf, String> {
-    let mut candidates = vec![resource_dir.join("adapter").join("seedance-adapter.mjs")];
+fn push_adapter_candidates_from_ancestors(
+    candidates: &mut Vec<PathBuf>,
+    start: &Path,
+    file_name: &str,
+) {
+    for base in start.ancestors().take(8) {
+        candidates.push(base.join("adapter").join(file_name));
+        candidates.push(
+            base.join("resources")
+                .join("adapter")
+                .join(file_name),
+        );
+    }
+}
 
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join("adapter").join("seedance-adapter.mjs"));
+fn adapter_script_candidates(resource_dir: &Path, file_name: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    // Installed/bundled resource locations.
+    push_adapter_candidates_from_ancestors(&mut candidates, resource_dir, file_name);
+
+    // Portable and dev executable locations. In tauri dev the executable
+    // lives under src-tauri/target/debug while the adapter directory lives at
+    // the repository root, so walking ancestors is required.
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(executable_dir) = executable.parent() {
+            push_adapter_candidates_from_ancestors(
+                &mut candidates,
+                executable_dir,
+                file_name,
+            );
+        }
     }
 
+    // Development working directory can be either repository root or
+    // src-tauri depending on how Tauri was launched.
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_adapter_candidates_from_ancestors(&mut candidates, &current_dir, file_name);
+    }
+
+    candidates.dedup();
     candidates
-        .into_iter()
+}
+
+fn resolve_adapter_resource(resource_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let candidates = adapter_script_candidates(resource_dir, file_name);
+    candidates
+        .iter()
         .find(|path| path.is_file())
+        .cloned()
         .ok_or_else(|| {
-            "Seedance adapter script was not found. Rebuild the app with adapter resources bundled."
-                .to_string()
+            let searched = candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!(
+                "Adapter resource {file_name} was not found. Searched: {searched}. Rebuild the app so adapter resources are included."
+            )
         })
 }
 
-fn open_log_file(app_data_dir: &Path) -> Result<(PathBuf, std::fs::File), String> {
+pub fn resolve_adapter_script(resource_dir: &Path) -> Result<PathBuf, String> {
+    resolve_adapter_resource(resource_dir, "seedance-adapter.mjs")
+}
+
+fn download_storage_dir(_app_data_dir: &Path) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let root = PathBuf::from(r"E:\Dola Chrome");
+        if !root.is_dir() {
+            return Err(
+                "Dola Chrome storage is unavailable at E:\\Dola Chrome. Video download was not started."
+                    .into(),
+            );
+        }
+        return Ok(root.join("Downloads"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(_app_data_dir.join("downloads"))
+    }
+}
+
+fn open_named_log_file(
+    app_data_dir: &Path,
+    name: &str,
+) -> Result<(PathBuf, std::fs::File), String> {
     let logs_dir = app_data_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("Cannot create adapter log directory: {e}"))?;
-    let log_path = logs_dir.join("seedance-adapter.log");
+    let log_path = logs_dir.join(name);
     let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .map_err(|e| format!("Cannot open adapter log file: {e}"))?;
     Ok((log_path, file))
+}
+
+fn open_log_file(app_data_dir: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    open_named_log_file(app_data_dir, "seedance-adapter.log")
+}
+
+fn resolve_profile_watcher_script(resource_dir: &Path) -> Result<PathBuf, String> {
+    resolve_adapter_resource(resource_dir, "profile-download-watcher.mjs")
+}
+
+pub fn start_profile_download_watcher(
+    resource_dir: &Path,
+    app_data_dir: &Path,
+    profile_id: &str,
+    browser_websocket_url: &str,
+    browser_pid: u32,
+) -> Result<ProfileDownloadWatcherRuntime, String> {
+    let node_path = find_node_executable().ok_or_else(|| {
+        "Node.js was not found. Install Node.js 20+ before opening profiles with auto-download."
+            .to_string()
+    })?;
+    let script_path = resolve_profile_watcher_script(resource_dir)?;
+    let download_dir = download_storage_dir(app_data_dir)?;
+    fs::create_dir_all(&download_dir).map_err(|e| {
+        format!(
+            "Cannot create video download directory at {}: {e}",
+            download_dir.display()
+        )
+    })?;
+
+    let (_log_path, stdout_file) =
+        open_named_log_file(app_data_dir, "profile-download-watcher.log")?;
+    let stderr_file = stdout_file
+        .try_clone()
+        .map_err(|e| format!("Cannot clone profile watcher log handle: {e}"))?;
+
+    let node_script_path = node_compatible_path(&script_path);
+    let node_working_dir = node_compatible_path(
+        script_path
+            .parent()
+            .ok_or_else(|| "Profile watcher script directory is invalid.".to_string())?,
+    );
+
+    let mut command = Command::new(&node_path);
+    command
+        .arg("-e")
+        .arg(NODE_ADAPTER_BOOTSTRAP)
+        .arg(&node_script_path)
+        .arg(browser_websocket_url)
+        .arg(profile_id)
+        .arg(browser_pid.to_string())
+        .current_dir(&node_working_dir)
+        .env("DOLA_DOWNLOAD_DIR", &download_dir)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .stdin(Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Cannot start profile auto-download watcher: {e}"))?;
+
+    thread::sleep(Duration::from_millis(250));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| format!("Cannot inspect profile auto-download watcher: {e}"))?
+    {
+        return Err(format!(
+            "Profile auto-download watcher exited immediately with {status}."
+        ));
+    }
+
+    Ok(ProfileDownloadWatcherRuntime { child })
 }
 
 pub fn start(
@@ -184,9 +357,13 @@ pub fn start(
             .to_string()
     })?;
     let script_path = resolve_adapter_script(resource_dir)?;
-    let download_dir = app_data_dir.join("downloads");
-    fs::create_dir_all(&download_dir)
-        .map_err(|e| format!("Cannot create video download directory: {e}"))?;
+    let download_dir = download_storage_dir(app_data_dir)?;
+    fs::create_dir_all(&download_dir).map_err(|e| {
+        format!(
+            "Cannot create video download directory at {}: {e}",
+            download_dir.display()
+        )
+    })?;
     let (log_path, stdout_file) = open_log_file(app_data_dir)?;
     let stderr_file = stdout_file
         .try_clone()

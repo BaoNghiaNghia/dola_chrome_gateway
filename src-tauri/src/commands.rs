@@ -7,18 +7,46 @@ use crate::models::{
     CreateGenerationJobRequest, CreateProfileRequest, CreateWorkspaceRequest, GenerationJob,
     LocalApiState, ProfileOperationalState, ProxyCheckResult, ProxyPoolItem, ProxyPoolItemRequest,
     ProxyPoolState, ProxySettings, ProxySettingsRequest, SchedulerState, SystemInfo,
-    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, WorkerState, Workspace,
+    UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest, UpdateProfileRequest,
+    WorkerState, Workspace,
 };
 use crate::proxy;
 use crate::state::AppState;
 use crate::worker;
-use chrono::Utc;
+use chrono::{DateTime, Local, Utc};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::State;
 
 const MAX_SIMULTANEOUS_PROFILES: usize = 4;
+const DEFAULT_PROFILE_ZOOM_PERCENT: u8 = chrome::DEFAULT_ZOOM_PERCENT;
+
+fn profile_storage_root(state: &AppState) -> &Path {
+    state
+        .profiles_dir
+        .parent()
+        .unwrap_or(&state.profiles_dir)
+}
+
+fn profile_storage_error(state: &AppState) -> Option<String> {
+    let root = profile_storage_root(state);
+    if root.is_dir() && state.profiles_dir.is_dir() {
+        None
+    } else {
+        Some(format!(
+            "Profile storage is unavailable at {}. Connect or mount the drive and make sure this folder exists, then restart Dola Chrome Gateway. No new Chrome session will be created.",
+            root.display()
+        ))
+    }
+}
+
+fn ensure_profile_storage_available(state: &AppState) -> Result<(), String> {
+    match profile_storage_error(state) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
 
 fn sync_processes_for_profiles(
     profiles: &[BrowserProfile],
@@ -38,6 +66,21 @@ fn sync_processes_for_profiles(
     let running_ids = discovered.keys().cloned().collect::<Vec<_>>();
     db::release_stale_proxy_assignments(&state.db_path, &running_ids)?;
 
+    let running_set = running_ids.iter().cloned().collect::<HashSet<_>>();
+    let mut watchers = state
+        .profile_download_watchers
+        .lock()
+        .map_err(|_| "Profile download watcher state is unavailable.".to_string())?;
+    let stale_watchers = watchers
+        .keys()
+        .filter(|profile_id| !running_set.contains(*profile_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for profile_id in stale_watchers {
+        watchers.remove(&profile_id);
+    }
+    drop(watchers);
+
     let mut processes = state
         .processes
         .lock()
@@ -49,6 +92,23 @@ fn sync_processes_for_profiles(
 fn refresh_processes(state: &AppState) -> Result<(), String> {
     let profiles = db::list_profiles(&state.db_path)?;
     sync_processes_for_profiles(&profiles, state)
+}
+
+fn tile_managed_profile_windows(state: &AppState) -> Result<(), String> {
+    let mut entries = state
+        .processes
+        .lock()
+        .map_err(|_| "Process state is unavailable.".to_string())?
+        .iter()
+        .map(|(profile_id, pid)| (profile_id.clone(), *pid))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let pids = entries
+        .into_iter()
+        .map(|(_, pid)| pid)
+        .collect::<Vec<_>>();
+    chrome::tile_windows(&pids);
+    Ok(())
 }
 
 fn is_profile_running(profile_id: &str, state: &AppState) -> Result<bool, String> {
@@ -67,7 +127,7 @@ fn decorate_running_state(profiles: &mut [BrowserProfile], state: &AppState) -> 
         .lock()
         .map_err(|_| "Process state is unavailable.".to_string())?;
 
-    for profile in profiles {
+    for profile in profiles.iter_mut() {
         if let Some(pid) = processes.get(&profile.id) {
             profile.is_running = true;
             profile.pid = Some(*pid);
@@ -77,7 +137,74 @@ fn decorate_running_state(profiles: &mut [BrowserProfile], state: &AppState) -> 
             profile.active_proxy = None;
         }
     }
+    drop(processes);
+
+    decorate_download_state(profiles, state);
     Ok(())
+}
+
+fn decorate_download_state(profiles: &mut [BrowserProfile], state: &AppState) {
+    // Downloaded is a daily UI state, not a permanent profile flag.
+    // Reset it on every refresh and only decorate files written during the
+    // current local calendar day. After local midnight, yesterday's download
+    // files remain on disk but no longer produce a Downloaded badge.
+    for profile in profiles.iter_mut() {
+        profile.latest_download_path = None;
+        profile.latest_download_file_name = None;
+        profile.latest_downloaded_at = None;
+    }
+
+    let today = Local::now().date_naive();
+    let downloads_dir = profile_storage_root(state).join("Downloads");
+    let Ok(entries) = std::fs::read_dir(&downloads_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if file_name.ends_with(".part") {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let modified_local = DateTime::<Local>::from(modified);
+        if modified_local.date_naive() != today {
+            continue;
+        }
+        let downloaded_at = DateTime::<Utc>::from(modified).to_rfc3339();
+
+        for profile in profiles.iter_mut() {
+            let prefix = format!("{}-", profile.id);
+            if !file_name.starts_with(&prefix) {
+                continue;
+            }
+
+            let is_newer = profile
+                .latest_downloaded_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|current| DateTime::<Utc>::from(modified) > current.with_timezone(&Utc))
+                .unwrap_or(true);
+
+            if is_newer {
+                profile.latest_download_path = Some(path.to_string_lossy().to_string());
+                profile.latest_download_file_name = Some(file_name.to_string());
+                profile.latest_downloaded_at = Some(downloaded_at.clone());
+            }
+        }
+    }
 }
 
 fn check_and_record_profile_proxy(
@@ -179,6 +306,8 @@ pub fn create_profile(
     request: CreateProfileRequest,
     state: State<'_, AppState>,
 ) -> Result<BrowserProfile, String> {
+    ensure_profile_storage_available(&state)?;
+
     // Per-profile proxy settings are retained for backward compatibility,
     // but the system proxy pool controls launch routing when configured.
     if let Some(settings) = request.proxy.as_ref() {
@@ -196,6 +325,17 @@ pub fn create_profile(
     }
 
     db::create_profile(&state.db_path, &state.profiles_dir, request)
+}
+
+#[tauri::command]
+pub fn update_profile(
+    profile_id: String,
+    request: UpdateProfileRequest,
+    state: State<'_, AppState>,
+) -> Result<BrowserProfile, String> {
+    let mut profile = db::update_profile(&state.db_path, &profile_id, request)?;
+    decorate_running_state(std::slice::from_mut(&mut profile), &state)?;
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -901,6 +1041,8 @@ pub fn set_automation_runtime_enabled(
     state: State<'_, AppState>,
 ) -> Result<AutomationRuntimeState, String> {
     if enabled {
+        ensure_profile_storage_available(&state)?;
+
         if adapter_runtime_running(&state)? {
             return get_automation_runtime_state(state);
         }
@@ -1059,6 +1201,8 @@ fn open_profile_ids(
     start_url: Option<String>,
     state: &AppState,
 ) -> Result<Vec<String>, String> {
+    ensure_profile_storage_available(state)?;
+
     if profile_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1171,13 +1315,43 @@ fn open_profile_ids(
             Path::new(&profile.profile_path),
             start_url.as_deref(),
             effective_proxy,
+            current_running + index,
         ) {
-            Ok(pid) => {
+            Ok(browser) => {
+                let watcher = match adapter_runtime::start_profile_download_watcher(
+                    &state.resource_dir,
+                    &state.app_data_dir,
+                    &profile.id,
+                    &browser.browser_websocket_url,
+                    browser.pid,
+                ) {
+                    Ok(watcher) => watcher,
+                    Err(error) => {
+                        let _ = chrome::close_profile(
+                            Path::new(&profile.profile_path),
+                            Some(browser.pid),
+                        );
+                        if pool_enabled {
+                            let _ =
+                                db::release_profile_proxy_assignment(&state.db_path, &profile.id);
+                        }
+                        return Err(format!(
+                            "Could not start auto-download for profile {}: {error}",
+                            profile.name
+                        ));
+                    }
+                };
+
+                state
+                    .profile_download_watchers
+                    .lock()
+                    .map_err(|_| "Profile download watcher state is unavailable.".to_string())?
+                    .insert(profile.id.clone(), watcher);
                 state
                     .processes
                     .lock()
                     .map_err(|_| "Process state is unavailable.".to_string())?
-                    .insert(profile.id.clone(), pid);
+                    .insert(profile.id.clone(), browser.pid);
                 db::touch_last_opened(&state.db_path, &profile.id)?;
                 db::touch_profile_used(&state.db_path, &profile.id)?;
                 opened.push(profile.id.clone());
@@ -1191,6 +1365,9 @@ fn open_profile_ids(
         }
     }
 
+    refresh_processes(state)?;
+    tile_managed_profile_windows(state)?;
+
     Ok(opened)
 }
 
@@ -1201,6 +1378,55 @@ pub fn open_profiles(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     open_profile_ids(profile_ids, start_url, &state)
+}
+
+#[tauri::command]
+pub fn open_profile_login_mode(
+    profile_id: String,
+    start_url: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_profile_storage_available(&state)?;
+    refresh_processes(&state)?;
+
+    let profile = db::get_profile(&state.db_path, &profile_id)?
+        .ok_or_else(|| "Profile does not exist.".to_string())?;
+
+    let current_running = state
+        .processes
+        .lock()
+        .map_err(|_| "Process state is unavailable.".to_string())?
+        .len();
+    if current_running >= MAX_SIMULTANEOUS_PROFILES {
+        return Err(format!(
+            "Only {MAX_SIMULTANEOUS_PROFILES} Chrome profiles can run at the same time."
+        ));
+    }
+    if is_profile_running(&profile_id, &state)? {
+        return Err("Close this profile before opening login mode.".into());
+    }
+
+    // Login mode deliberately bypasses the automation watcher and proxy-pool
+    // allocation. This gives Google a normal Chrome session while preserving
+    // the exact same user-data directory, cookies, and account session.
+    let pid = chrome::launch_login(
+        Path::new(&profile.profile_path),
+        start_url.as_deref(),
+        &ProxySettings::default(),
+        current_running,
+    )?;
+
+    state
+        .processes
+        .lock()
+        .map_err(|_| "Process state is unavailable.".to_string())?
+        .insert(profile.id.clone(), pid);
+
+    db::touch_last_opened(&state.db_path, &profile.id)?;
+    db::touch_profile_used(&state.db_path, &profile.id)?;
+    tile_managed_profile_windows(&state)?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1218,12 +1444,23 @@ pub fn close_profile(profile_id: String, state: State<'_, AppState>) -> Result<(
 
     chrome::close_profile(Path::new(&profile.profile_path), known_pid)?;
 
+    if let Some(watcher) = state
+        .profile_download_watchers
+        .lock()
+        .map_err(|_| "Profile download watcher state is unavailable.".to_string())?
+        .remove(&profile_id)
+    {
+        watcher.stop();
+    }
+
     state
         .processes
         .lock()
         .map_err(|_| "Process state is unavailable.".to_string())?
         .remove(&profile_id);
     db::release_profile_proxy_assignment(&state.db_path, &profile_id)?;
+    refresh_processes(&state)?;
+    tile_managed_profile_windows(&state)?;
 
     Ok(())
 }
@@ -1248,15 +1485,17 @@ pub fn delete_workspace(workspace_id: String, state: State<'_, AppState>) -> Res
 
 #[tauri::command]
 pub fn get_system_info(state: State<'_, AppState>) -> Result<SystemInfo, String> {
+    let storage_root = profile_storage_root(&state);
+    let storage_error = profile_storage_error(&state);
+
     Ok(SystemInfo {
         chrome_path: chrome::find_chrome_executable()
             .map(|path| path.to_string_lossy().to_string()),
-        data_dir: state
-            .profiles_dir
-            .parent()
-            .unwrap_or(&state.profiles_dir)
-            .to_string_lossy()
-            .to_string(),
+        data_dir: storage_root.to_string_lossy().to_string(),
         max_simultaneous_profiles: MAX_SIMULTANEOUS_PROFILES,
+        profile_storage_available: storage_error.is_none(),
+        profile_storage_path: storage_root.to_string_lossy().to_string(),
+        profile_storage_error: storage_error,
+        default_zoom_percent: DEFAULT_PROFILE_ZOOM_PERCENT,
     })
 }

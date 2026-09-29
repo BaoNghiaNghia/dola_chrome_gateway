@@ -21,6 +21,7 @@ import {
   listGenerationJobs,
   listProfiles,
   listWorkspaces,
+  openProfileLoginMode,
   openProfiles,
   openSmartProfiles,
   revealGenerationResult,
@@ -29,13 +30,12 @@ import {
   rotateProxyPoolItem,
   runWorkerTick,
   setAutomationRuntimeEnabled,
-  setLocalApiEnabled,
   setLocalApiPort,
   setProxyPoolEnabled,
   setSchedulerEnabled,
-  setWorkerEnabled,
   testProxyPoolItem,
   updateAutomationRuntimeConfig,
+  updateProfile,
   updateProfileOperationalState,
   updateProxyPoolItem,
 } from "./api";
@@ -43,7 +43,6 @@ import type {
   AutomationRuntimeState,
   BrowserProfile,
   CreateGenerationJobInput,
-  CreateProfileInput,
   GenerationJob,
   LocalApiState,
   ProxyPoolItem,
@@ -57,6 +56,9 @@ import type {
 import seedanceLogo from "./assets/seedance-logo.svg";
 import profilesIcon from "./assets/profiles-icon.svg";
 import proxiesIcon from "./assets/proxies-icon.svg";
+import facebookIcon from "./assets/facebook-icon.svg";
+import gmailIcon from "./assets/gmail-icon.svg";
+import appleIdIcon from "./assets/apple-id-icon.svg";
 import "./App.css";
 
 const MAX_SELECTED = 4;
@@ -65,6 +67,7 @@ type View = "profiles" | "proxies" | "queue";
 type QueueFilter = "all" | "active" | "queued" | "completed" | "failed";
 type QueueSort = "newest" | "oldest" | "active";
 type ProfileDensity = "comfortable" | "compact";
+type AccountType = "facebook" | "gmail" | "apple_id";
 
 const UI_PREFS_KEY = "dola-gateway-ui-v1";
 
@@ -115,6 +118,20 @@ function initials(name: string) {
     .join("");
 }
 
+function profileAccountType(profile: BrowserProfile) {
+  const type = profile.services?.[0] ?? "";
+  switch (type) {
+    case "facebook":
+      return { key: type, label: "Facebook", icon: facebookIcon };
+    case "gmail":
+      return { key: type, label: "Gmail", icon: gmailIcon };
+    case "apple_id":
+      return { key: type, label: "Apple ID", icon: appleIdIcon };
+    default:
+      return { key: "default", label: "Account", icon: null };
+  }
+}
+
 function relativeTime(value: string | null) {
   if (!value) return "Never";
   const date = new Date(value);
@@ -135,41 +152,45 @@ function errorMessage(error: unknown) {
 }
 
 type ProfileFormProps = {
+  initial?: BrowserProfile;
   onClose: () => void;
   onSaved: (profile: BrowserProfile) => void;
 };
 
-function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
-  const [form, setForm] = useState<CreateProfileInput>({
-    name: "",
-    email: "",
-    groupName: "",
-    services: [],
-    tags: [],
-    notes: "",
-  });
-  const [tags, setTags] = useState("");
+function ProfileForm({ initial, onClose, onSaved }: ProfileFormProps) {
+  const initialType = initial?.services?.[0];
+  const [accountLabel, setAccountLabel] = useState(
+    initial?.email || initial?.name || "",
+  );
+  const [accountType, setAccountType] = useState<AccountType>(
+    initialType === "facebook" || initialType === "gmail" || initialType === "apple_id"
+      ? initialType
+      : "gmail",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.name.trim()) return;
+    const label = accountLabel.trim();
+    if (!label) return;
 
     setSaving(true);
     setError("");
     try {
-      const profile = await createProfile({
-        ...form,
-        name: form.name.trim(),
-        email: form.email?.trim() || null,
-        groupName: form.groupName?.trim() || null,
-        notes: form.notes?.trim() || null,
-        tags: tags
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-      });
+      const profile = initial
+        ? await updateProfile(initial.id, {
+            accountLabel: label,
+            accountType,
+          })
+        : await createProfile({
+            name: label,
+            email: label,
+            groupName: null,
+            services: [accountType],
+            tags: [],
+            notes: null,
+          });
       onSaved(profile);
     } catch (err) {
       setError(errorMessage(err));
@@ -181,17 +202,18 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <form
-        className="modal-card"
+        className="modal-card profile-create-card"
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={submit}
       >
         <div className="modal-heading">
           <div>
-            <span className="eyebrow">NEW PROFILE</span>
-            <h2>Create Chrome profile</h2>
+            <span className="eyebrow">{initial ? "EDIT PROFILE" : "NEW PROFILE"}</span>
+            <h2>{initial ? "Edit Chrome profile" : "Create Chrome profile"}</h2>
             <p>
-              Login session data stays isolated in this profile. Proxy routing is
-              managed centrally from the Proxies tab.
+              {initial
+                ? "Update the account label or type without changing its Chrome session."
+                : "Create an isolated Chrome session for this account."}
             </p>
           </div>
           <button type="button" className="icon-button" onClick={onClose}>
@@ -199,53 +221,29 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
           </button>
         </div>
 
-        <label>
-          Profile name
-          <input
-            autoFocus
-            value={form.name}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-            placeholder="Store US 01"
-          />
-        </label>
-
-        <div className="form-grid">
+        <div className="form-grid profile-create-grid">
           <label>
             Email / account label
             <input
-              value={form.email ?? ""}
-              onChange={(event) => setForm({ ...form, email: event.target.value })}
+              autoFocus
+              value={accountLabel}
+              onChange={(event) => setAccountLabel(event.target.value)}
               placeholder="account@example.com"
             />
           </label>
+
           <label>
-            Group
-            <input
-              value={form.groupName ?? ""}
-              onChange={(event) => setForm({ ...form, groupName: event.target.value })}
-              placeholder="US Store"
-            />
+            Type
+            <select
+              value={accountType}
+              onChange={(event) => setAccountType(event.target.value as AccountType)}
+            >
+              <option value="facebook">Facebook</option>
+              <option value="gmail">Gmail</option>
+              <option value="apple_id">Apple ID</option>
+            </select>
           </label>
         </div>
-
-        <label>
-          Tags
-          <input
-            value={tags}
-            onChange={(event) => setTags(event.target.value)}
-            placeholder="marketing, store, priority"
-          />
-        </label>
-
-        <label>
-          Notes
-          <textarea
-            value={form.notes ?? ""}
-            onChange={(event) => setForm({ ...form, notes: event.target.value })}
-            placeholder="Optional notes about this account"
-            rows={3}
-          />
-        </label>
 
         {error && <div className="inline-error">{error}</div>}
 
@@ -253,8 +251,14 @@ function ProfileForm({ onClose, onSaved }: ProfileFormProps) {
           <button type="button" className="button secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled={saving || !form.name.trim()}>
-            {saving ? "Creating…" : "Create profile"}
+          <button className="button primary" disabled={saving || !accountLabel.trim()}>
+            {saving
+              ? initial
+                ? "Saving…"
+                : "Creating…"
+              : initial
+                ? "Save changes"
+                : "Create profile"}
           </button>
         </div>
       </form>
@@ -525,6 +529,7 @@ function App() {
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<BrowserProfile | null>(null);
   const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null);
   const [showProxyForm, setShowProxyForm] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
@@ -682,6 +687,7 @@ function App() {
   const needsLoginCount = profiles.filter(
     (profile) => profile.operational.availability === "needs_login",
   ).length;
+  const profileStorageReady = system?.profileStorageAvailable ?? false;
 
   const visibleJobs = useMemo(() => {
     const needle = queueQuery.trim().toLowerCase();
@@ -904,8 +910,8 @@ function App() {
       setBanner({
         kind: "success",
         text: enabled
-          ? "Automation Runtime started. Scheduler, Local API, allocator and Seedance adapter are active."
-          : "Automation Runtime stopped. Adapter, allocator and Local API are off.",
+          ? "Automation started."
+          : "Automation stopped.",
       });
       await refresh();
       if (showAutomationLog) {
@@ -914,7 +920,7 @@ function App() {
     } catch {
       setBanner({
         kind: "error",
-        text: "Automation Runtime could not start. See the runtime error below or open View logs for details.",
+        text: "Automation could not start. Open Advanced settings for details.",
       });
       await refresh();
     } finally {
@@ -928,7 +934,7 @@ function App() {
       automationDraft.concurrency < 1 ||
       automationDraft.concurrency > 4
     ) {
-      setBanner({ kind: "error", text: "Adapter concurrency must be between 1 and 4." });
+      setBanner({ kind: "error", text: "Concurrency must be between 1 and 4." });
       return;
     }
 
@@ -946,7 +952,7 @@ function App() {
         timeoutSeconds: next.timeoutSeconds,
         manualVerificationSeconds: next.manualVerificationSeconds,
       });
-      setBanner({ kind: "success", text: "Automation Runtime settings saved." });
+      setBanner({ kind: "success", text: "Automation settings saved." });
     } catch (error) {
       setBanner({ kind: "error", text: errorMessage(error) });
     } finally {
@@ -965,16 +971,6 @@ function App() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function toggleLocalApi(enabled: boolean) {
-    await perform(
-      () => setLocalApiEnabled(enabled),
-      enabled
-        ? "Local API started on loopback only."
-        : "Local API stopped.",
-    );
-    if (!enabled) setRevealedApiKey("");
   }
 
   async function saveApiPort() {
@@ -1018,15 +1014,6 @@ function App() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function toggleWorker(enabled: boolean) {
-    await perform(
-      () => setWorkerEnabled(enabled),
-      enabled
-        ? "Allocation worker started."
-        : "Allocation worker stopped.",
-    );
   }
 
   async function allocateNow() {
@@ -1204,6 +1191,13 @@ function App() {
       </aside>
 
       <main className="content">
+        {system && !system.profileStorageAvailable && (
+          <div className="banner error storage-warning">
+            {system.profileStorageError ||
+              `Profile storage is unavailable at ${system.profileStoragePath}. No new Chrome session will be created.`}
+          </div>
+        )}
+
         {view === "profiles" ? (
           <>
             <header className="topbar">
@@ -1214,7 +1208,16 @@ function App() {
                   Persistent Dola login sessions with optional rotating proxy routing.
                 </p>
               </div>
-              <button className="button primary" onClick={() => setShowCreate(true)}>
+              <button
+                className="button primary"
+                disabled={!profileStorageReady}
+                onClick={() => setShowCreate(true)}
+                title={
+                  profileStorageReady
+                    ? "Create profile"
+                    : "E:\\Dola Chrome is unavailable"
+                }
+              >
                 <span className="plus">＋</span> New profile
               </button>
             </header>
@@ -1257,7 +1260,7 @@ function App() {
                 <span>Advanced scheduler settings</span>
                 <small>
                   {automationRuntime.running
-                    ? "Managed by Automation Runtime"
+                    ? "Managed by Automation"
                     : scheduler.enabled
                       ? "Scheduler ON"
                       : "Scheduler OFF"}
@@ -1283,7 +1286,7 @@ function App() {
               </div>
             </details>
 
-            <section className="panel">
+            <section className="panel profiles-panel">
               <div className="toolbar">
                 <div className="search-box">
                   <span>⌕</span>
@@ -1317,7 +1320,12 @@ function App() {
                 <div className="toolbar-spacer" />
                 <button
                   className="button secondary"
-                  disabled={!scheduler.enabled || scheduler.readyProfiles === 0 || busy}
+                  disabled={
+                    !profileStorageReady ||
+                    !scheduler.enabled ||
+                    scheduler.readyProfiles === 0 ||
+                    busy
+                  }
                   onClick={() =>
                     perform(
                       () => openSmartProfiles(MAX_SELECTED),
@@ -1332,7 +1340,7 @@ function App() {
                 </span>
                 <button
                   className="button primary"
-                  disabled={selected.length === 0 || busy}
+                  disabled={!profileStorageReady || selected.length === 0 || busy}
                   onClick={() =>
                     perform(
                       () => openProfiles(selected),
@@ -1392,6 +1400,7 @@ function App() {
                     {!profiles.length && (
                       <button
                         className="button primary"
+                        disabled={!profileStorageReady}
                         onClick={() => setShowCreate(true)}
                       >
                         Create profile
@@ -1401,6 +1410,7 @@ function App() {
                 ) : (
                   visibleProfiles.map((profile) => {
                     const checked = selected.includes(profile.id);
+                    const accountType = profileAccountType(profile);
                     return (
                       <article
                         className={
@@ -1418,10 +1428,23 @@ function App() {
                         </label>
 
                         <div className="profile-cell">
-                          <div className="avatar">{initials(profile.name)}</div>
+                          <div
+                            className={`avatar account-type-avatar ${accountType.key}`}
+                            title={accountType.label}
+                          >
+                            {accountType.icon ? (
+                              <img src={accountType.icon} alt="" aria-hidden="true" />
+                            ) : (
+                              initials(profile.name)
+                            )}
+                          </div>
                           <div>
                             <strong>{profile.name}</strong>
-                            <span>{profile.email || "No account label"}</span>
+                            <span>
+                              {accountType.key === "default"
+                                ? profile.email || accountType.label
+                                : accountType.label}
+                            </span>
                           </div>
                         </div>
 
@@ -1451,16 +1474,36 @@ function App() {
 
                         <span>{profile.groupName || "—"}</span>
 
-                        <span
-                          className={
-                            profile.isRunning
-                              ? "run-status running"
-                              : "run-status"
-                          }
-                        >
-                          <i />
-                          {profile.isRunning ? "Running" : "Stopped"}
-                        </span>
+                        <div className="profile-status-stack">
+                          <span
+                            className={
+                              profile.isRunning
+                                ? "run-status running"
+                                : "run-status"
+                            }
+                          >
+                            <i />
+                            {profile.isRunning ? "Running" : "Stopped"}
+                          </span>
+                          {profile.latestDownloadPath && (
+                            <span
+                              className="download-status downloaded"
+                              title={
+                                profile.latestDownloadPath ||
+                                profile.latestDownloadFileName ||
+                                undefined
+                              }
+                            >
+                              <b>✓</b>
+                              Downloaded
+                              {profile.latestDownloadedAt && (
+                                <small>
+                                  {relativeTime(profile.latestDownloadedAt)}
+                                </small>
+                              )}
+                            </span>
+                          )}
+                        </div>
 
                         <span className="muted">
                           {relativeTime(profile.lastOpenedAt)}
@@ -1483,7 +1526,7 @@ function App() {
                           ) : (
                             <button
                               className="mini-button"
-                              disabled={busy}
+                              disabled={busy || !profileStorageReady}
                               onClick={() =>
                                 perform(
                                   () => openProfiles([profile.id]),
@@ -1504,6 +1547,31 @@ function App() {
                               ⋯
                             </summary>
                             <div className="profile-action-popover">
+                              <button
+                                disabled={busy}
+                                onClick={(event) => {
+                                  const details = event.currentTarget.closest("details");
+                                  if (details) details.open = false;
+                                  setEditingProfile(profile);
+                                }}
+                              >
+                                Edit profile
+                              </button>
+                              {!profile.isRunning && accountType.key === "gmail" && (
+                                <button
+                                  disabled={busy || !profileStorageReady}
+                                  onClick={(event) => {
+                                    const details = event.currentTarget.closest("details");
+                                    if (details) details.open = false;
+                                    void perform(
+                                      () => openProfileLoginMode(profile.id),
+                                      "Chrome opened in Google login mode. Complete sign-in, then close it and use Open normally.",
+                                    );
+                                  }}
+                                >
+                                  Open Google login
+                                </button>
+                              )}
                               {!profile.isRunning &&
                                 ["unknown", "needs_login"].includes(
                                   profile.operational.availability,
@@ -1819,40 +1887,48 @@ function App() {
               <div className={`banner ${banner.kind}`}>{banner.text}</div>
             )}
 
-            <section className={`automation-master-card ${automationRuntime.running ? "running" : ""}`}>
+            <section className={`automation-master-card automation-master-compact ${automationRuntime.running ? "running" : ""}`}>
               <div className="automation-master-head">
                 <div className="automation-master-title">
                   <div className="automation-logo">
                     <img src={seedanceLogo} alt="" aria-hidden="true" />
                   </div>
                   <div>
-                    <span className="eyebrow">ONE-CLICK ORCHESTRATION</span>
-                    <h3>Automation Runtime</h3>
+                    <span className="eyebrow">AUTOMATION</span>
+                    <h3>Seedance automation</h3>
                     <p>
-                      Starts Smart Scheduler, Local API, Profile Allocator and the Seedance
-                      execution adapter as one managed runtime.
+                      {automationRuntime.running
+                        ? "Running jobs automatically across available profiles."
+                        : "Start once to enable scheduling, browser execution and downloads."}
                     </p>
                   </div>
                 </div>
-                <div className="automation-master-status">
+                <div className="automation-master-status automation-master-primary-action">
                   <span className={automationRuntime.running ? "runtime-chip on" : "runtime-chip"}>
                     {automationRuntime.running ? "RUNNING" : "STOPPED"}
                   </span>
-                  <label className="master-toggle runtime-toggle" title="Toggle Automation Runtime">
-                    <input
-                      type="checkbox"
-                      checked={automationRuntime.running}
-                      disabled={busy}
-                      onChange={(event) => void toggleAutomationRuntime(event.target.checked)}
-                    />
-                    <span />
-                  </label>
+                  <button
+                    className={automationRuntime.running ? "button secondary" : "button primary"}
+                    disabled={busy || (!automationRuntime.running && !profileStorageReady)}
+                    onClick={() => void toggleAutomationRuntime(!automationRuntime.running)}
+                    title={
+                      !automationRuntime.running && !profileStorageReady
+                        ? "E:\\Dola Chrome is unavailable"
+                        : undefined
+                    }
+                  >
+                    {busy
+                      ? "Working…"
+                      : automationRuntime.running
+                        ? "Stop"
+                        : "Start"}
+                  </button>
                 </div>
               </div>
 
               <div className="automation-dependencies">
                 <span className={scheduler.readyProfiles > 0 ? "dependency-chip on" : "dependency-chip"}>
-                  {scheduler.readyProfiles} Ready profile{scheduler.readyProfiles === 1 ? "" : "s"}
+                  {scheduler.readyProfiles} Ready
                 </span>
                 <span className={activeJobs > 0 ? "dependency-chip on" : "dependency-chip"}>
                   {activeJobs} active
@@ -1865,140 +1941,10 @@ function App() {
                     {needsLoginCount} need login
                   </span>
                 )}
-                <span className={automationRuntime.nodePath ? "dependency-chip on" : "dependency-chip error"}>
-                  Node {automationRuntime.nodePath ? "READY" : "MISSING"}
-                </span>
               </div>
-
-              <div className="automation-config-grid">
-                <label>
-                  Concurrency
-                  <select
-                    value={automationDraft.concurrency}
-                    disabled={automationRuntime.running || busy}
-                    onChange={(event) =>
-                      setAutomationDraft({
-                        ...automationDraft,
-                        concurrency: Number(event.target.value),
-                      })
-                    }
-                  >
-                    <option value={1}>1 profile</option>
-                    <option value={2}>2 profiles</option>
-                    <option value={3}>3 profiles</option>
-                    <option value={4}>4 profiles</option>
-                  </select>
-                </label>
-                <label>
-                  Generation timeout
-                  <select
-                    value={automationDraft.timeoutSeconds}
-                    disabled={automationRuntime.running || busy}
-                    onChange={(event) =>
-                      setAutomationDraft({
-                        ...automationDraft,
-                        timeoutSeconds: Number(event.target.value),
-                      })
-                    }
-                  >
-                    <option value={600}>10 min</option>
-                    <option value={1200}>20 min</option>
-                    <option value={1800}>30 min</option>
-                    <option value={3600}>60 min</option>
-                  </select>
-                </label>
-                <label>
-                  Manual verification
-                  <select
-                    value={automationDraft.manualVerificationSeconds}
-                    disabled={automationRuntime.running || busy}
-                    onChange={(event) =>
-                      setAutomationDraft({
-                        ...automationDraft,
-                        manualVerificationSeconds: Number(event.target.value),
-                      })
-                    }
-                  >
-                    <option value={60}>1 min</option>
-                    <option value={180}>3 min</option>
-                    <option value={300}>5 min</option>
-                    <option value={600}>10 min</option>
-                  </select>
-                </label>
-                <button
-                  className="mini-button automation-save-button"
-                  disabled={
-                    automationRuntime.running ||
-                    busy ||
-                    (automationDraft.concurrency === automationRuntime.concurrency &&
-                      automationDraft.timeoutSeconds === automationRuntime.timeoutSeconds &&
-                      automationDraft.manualVerificationSeconds ===
-                        automationRuntime.manualVerificationSeconds)
-                  }
-                  onClick={() => void saveAutomationConfig()}
-                >
-                  Save settings
-                </button>
-              </div>
-
-              <details className="automation-technical-details">
-                <summary>Runtime details</summary>
-                <div className="automation-meta">
-                  <div>
-                    <span>PID</span>
-                    <strong>{automationRuntime.pid ?? "—"}</strong>
-                  </div>
-                  <div>
-                    <span>Started</span>
-                    <strong>{relativeTime(automationRuntime.startedAt)}</strong>
-                  </div>
-                  <div className="automation-path">
-                    <span>Adapter</span>
-                    <code title={automationRuntime.scriptPath ?? undefined}>
-                      {automationRuntime.scriptPath ?? "Resource unavailable"}
-                    </code>
-                  </div>
-                </div>
-              </details>
 
               {automationRuntime.lastError && (
                 <div className="runtime-error">{automationRuntime.lastError}</div>
-              )}
-
-              <div className="automation-actions">
-                <button
-                  className={automationRuntime.running ? "button secondary" : "button primary"}
-                  disabled={busy}
-                  onClick={() => void toggleAutomationRuntime(!automationRuntime.running)}
-                >
-                  {automationRuntime.running ? "■ Stop automation" : "▶ Start automation"}
-                </button>
-                <button
-                  className="mini-button"
-                  disabled={busy}
-                  onClick={() =>
-                    showAutomationLog
-                      ? setShowAutomationLog(false)
-                      : void refreshAutomationLog(true)
-                  }
-                >
-                  {showAutomationLog ? "Hide logs" : "View logs"}
-                </button>
-                {showAutomationLog && (
-                  <button
-                    className="mini-button"
-                    disabled={busy}
-                    onClick={() => void refreshAutomationLog(false)}
-                  >
-                    Refresh logs
-                  </button>
-                )}
-              </div>
-
-              {showAutomationLog && (
-                <pre className="automation-log">
-                  {automationLog.trim() || "No adapter log output yet."}
-                </pre>
               )}
             </section>
 
@@ -2010,9 +1956,127 @@ function App() {
               }
             >
               <summary>
-                <span>Advanced runtime controls</span>
-                <small>Local API · Allocator · API key</small>
+                <span>Advanced settings</span>
+                <small>Concurrency · Runtime · Local API</small>
               </summary>
+
+              <div className="automation-advanced-settings">
+                <div className="automation-config-grid">
+                  <label>
+                    Concurrency
+                    <select
+                      value={automationDraft.concurrency}
+                      disabled={automationRuntime.running || busy}
+                      onChange={(event) =>
+                        setAutomationDraft({
+                          ...automationDraft,
+                          concurrency: Number(event.target.value),
+                        })
+                      }
+                    >
+                      <option value={1}>1 profile</option>
+                      <option value={2}>2 profiles</option>
+                      <option value={3}>3 profiles</option>
+                      <option value={4}>4 profiles</option>
+                    </select>
+                  </label>
+                  <label>
+                    Generation timeout
+                    <select
+                      value={automationDraft.timeoutSeconds}
+                      disabled={automationRuntime.running || busy}
+                      onChange={(event) =>
+                        setAutomationDraft({
+                          ...automationDraft,
+                          timeoutSeconds: Number(event.target.value),
+                        })
+                      }
+                    >
+                      <option value={600}>10 min</option>
+                      <option value={1200}>20 min</option>
+                      <option value={1800}>30 min</option>
+                      <option value={3600}>60 min</option>
+                    </select>
+                  </label>
+                  <label>
+                    Manual verification
+                    <select
+                      value={automationDraft.manualVerificationSeconds}
+                      disabled={automationRuntime.running || busy}
+                      onChange={(event) =>
+                        setAutomationDraft({
+                          ...automationDraft,
+                          manualVerificationSeconds: Number(event.target.value),
+                        })
+                      }
+                    >
+                      <option value={60}>1 min</option>
+                      <option value={180}>3 min</option>
+                      <option value={300}>5 min</option>
+                      <option value={600}>10 min</option>
+                    </select>
+                  </label>
+                  <button
+                    className="mini-button automation-save-button"
+                    disabled={
+                      automationRuntime.running ||
+                      busy ||
+                      (automationDraft.concurrency === automationRuntime.concurrency &&
+                        automationDraft.timeoutSeconds === automationRuntime.timeoutSeconds &&
+                        automationDraft.manualVerificationSeconds ===
+                          automationRuntime.manualVerificationSeconds)
+                    }
+                    onClick={() => void saveAutomationConfig()}
+                  >
+                    Save
+                  </button>
+                </div>
+
+                <div className="automation-meta">
+                  <div>
+                    <span>PID</span>
+                    <strong>{automationRuntime.pid ?? "—"}</strong>
+                  </div>
+                  <div>
+                    <span>Started</span>
+                    <strong>{relativeTime(automationRuntime.startedAt)}</strong>
+                  </div>
+                  <div>
+                    <span>Node</span>
+                    <strong>{automationRuntime.nodePath ? "Ready" : "Missing"}</strong>
+                  </div>
+                </div>
+
+                <div className="automation-actions">
+                  <button
+                    className="mini-button"
+                    disabled={busy}
+                    onClick={() =>
+                      showAutomationLog
+                        ? setShowAutomationLog(false)
+                        : void refreshAutomationLog(true)
+                    }
+                  >
+                    {showAutomationLog ? "Hide logs" : "View logs"}
+                  </button>
+                  {showAutomationLog && (
+                    <button
+                      className="mini-button"
+                      disabled={busy}
+                      onClick={() => void refreshAutomationLog(false)}
+                    >
+                      Refresh
+                    </button>
+                  )}
+                </div>
+
+                {showAutomationLog && (
+                  <pre className="automation-log">
+                    {automationLog.trim() || "No automation log output yet."}
+                  </pre>
+                )}
+              </div>
+
               <section className="runtime-grid">
               <article className="runtime-card">
                 <div className="runtime-card-head">
@@ -2075,15 +2139,9 @@ function App() {
                   >
                     Rotate key
                   </button>
-                  <label className="master-toggle runtime-toggle" title="Enable Local API">
-                    <input
-                      type="checkbox"
-                      checked={localApi.enabled}
-                      disabled={busy || automationRuntime.running}
-                      onChange={(event) => void toggleLocalApi(event.target.checked)}
-                    />
-                    <span />
-                  </label>
+                  <span className="runtime-mode">
+                    Managed by Start
+                  </span>
                 </div>
               </article>
 
@@ -2129,20 +2187,9 @@ function App() {
                   >
                     Allocate now
                   </button>
-                  <span className="runtime-mode">{workerState.mode}</span>
-                  <label className="master-toggle runtime-toggle" title="Enable allocation worker">
-                    <input
-                      type="checkbox"
-                      checked={workerState.enabled}
-                      disabled={
-                        busy ||
-                        automationRuntime.running ||
-                        (!scheduler.enabled && !workerState.enabled)
-                      }
-                      onChange={(event) => void toggleWorker(event.target.checked)}
-                    />
-                    <span />
-                  </label>
+                  <span className="runtime-mode">
+                    {automationRuntime.running ? "Managed by Start" : workerState.mode}
+                  </span>
                 </div>
               </article>
               </section>
@@ -2154,8 +2201,8 @@ function App() {
                   <div>
                     <strong>Queue Seedance job</strong>
                     <span>
-                      Jobs start automatically when Automation Runtime is running and a
-                      Ready profile is available.
+                      Jobs start automatically when Automation is running and a Ready
+                      profile is available.
                     </span>
                   </div>
                   <button
@@ -2294,8 +2341,8 @@ function App() {
                   </div>
                   <h3>No generation jobs yet</h3>
                   <p>
-                    Queue a Seedance generation. Automation Runtime will assign a Ready
-                    profile, run it, and download the completed video automatically.
+                    Queue a Seedance generation. Automation will assign a Ready profile,
+                    run it, and download the completed video automatically.
                   </p>
                   <button
                     className="button primary"
@@ -2473,6 +2520,23 @@ function App() {
             setBanner({
               kind: "success",
               text: "Profile created. Open it and sign in once.",
+            });
+          }}
+        />
+      )}
+
+      {editingProfile && (
+        <ProfileForm
+          initial={editingProfile}
+          onClose={() => setEditingProfile(null)}
+          onSaved={(profile) => {
+            setProfiles((current) =>
+              current.map((item) => (item.id === profile.id ? profile : item)),
+            );
+            setEditingProfile(null);
+            setBanner({
+              kind: "success",
+              text: "Profile updated. Chrome session and login data were preserved.",
             });
           }}
         />

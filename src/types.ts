@@ -120,6 +120,9 @@ export type BrowserProfile = {
   operational: ProfileOperationalState;
   isRunning: boolean;
   pid: number | null;
+  latestDownloadPath: string | null;
+  latestDownloadFileName: string | null;
+  latestDownloadedAt: string | null;
   lastOpenedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -247,6 +250,10 @@ export type SystemInfo = {
   chromePath: string | null;
   dataDir: string;
   maxSimultaneousProfiles: number;
+  profileStorageAvailable: boolean;
+  profileStoragePath: string;
+  profileStorageError: string | null;
+  defaultZoomPercent: number;
 };
 
 export type CreateProfileInput = {
@@ -256,4 +263,9 @@ export type CreateProfileInput = {
   services: string[];
   tags: string[];
   notes?: string | null;
+};
+
+export type UpdateProfileInput = {
+  accountLabel: string;
+  accountType: "facebook" | "gmail" | "apple_id";
 };

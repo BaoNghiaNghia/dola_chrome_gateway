@@ -216,11 +216,11 @@ async function executeClaim(workerId, claim) {
       );
     }
 
-    if (downloadedResult.fallbackUsed) {
+    if (downloadedResult.alternateUsed) {
       downloadedResult = await driver.finalizeVideoCandidate(downloadedResult);
       log(
         workerId,
-        `original stream download failed; used download_url fallback: ${downloadedResult.primaryDownloadError || "unknown original-stream error"}`,
+        `highest-quality clean stream download failed; used the next clean original candidate: ${downloadedResult.higherQualityDownloadError || "unknown higher-quality stream error"}`,
       );
     }
 
