@@ -104,13 +104,20 @@ function candidateScore(candidate) {
       ? candidate.width * candidate.height
       : 0;
   const hintedHeight = candidate.resolutionHint || 0;
+  const bitrate = candidate.bitrate || 0;
 
+  // Dola's original-quality stream is identified primarily by bitrate.
+  // This mirrors dola-render-gateway's extract_unwatermarked_url(), which
+  // sorts video_model.video_list by bitrate/real_bitrate descending. Some
+  // high-bitrate originals omit width/height metadata, so resolution must
+  // only be a tie-breaker or we'd accidentally prefer a small preview.
   return [
     candidate.noWatermark ? 1 : 0,
+    bitrate > 0 ? 1 : 0,
+    bitrate,
     area > 0 ? 1 : 0,
     area,
     hintedHeight,
-    candidate.bitrate || 0,
   ];
 }
 
@@ -157,13 +164,25 @@ export function extractOriginalVideoCandidates(videoModels = []) {
       seen.add(url);
 
       const { width, height } = resolutionFromObject(entry);
+      const bitrateMeta =
+        entry.meta ||
+        entry.video_meta ||
+        entry.videoMeta ||
+        entry.video_info ||
+        entry.videoInfo ||
+        {};
       const bitrate =
         numberOrNull(
           entry.bitrate ??
             entry.real_bitrate ??
             entry.realBitrate ??
             entry.bit_rate ??
-            entry.bitRate,
+            entry.bitRate ??
+            bitrateMeta.bitrate ??
+            bitrateMeta.real_bitrate ??
+            bitrateMeta.realBitrate ??
+            bitrateMeta.bit_rate ??
+            bitrateMeta.bitRate,
         ) || 0;
 
       candidates.push({
@@ -264,6 +283,35 @@ function safeJobId(jobId) {
   return String(jobId || "generation").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
 }
 
+export class VideoQualityUnavailableError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = "VideoQualityUnavailableError";
+    this.code = "quality_unavailable";
+    this.details = details;
+  }
+}
+
+export function expectedVideoBytes(candidate) {
+  const bitrate = numberOrNull(candidate?.bitrate);
+  const duration = numberOrNull(candidate?.duration);
+  if (!bitrate || !duration) return null;
+  return Math.round((bitrate * duration) / 8);
+}
+
+export function isSuspiciouslySmallVideo(candidate, fileSize) {
+  const size = numberOrNull(fileSize) || 0;
+  if (size < 256 * 1024) return true;
+
+  const expected = expectedVideoBytes(candidate);
+  if (!expected || expected < 2 * 1024 * 1024) return false;
+
+  // Dola bitrate is nominal and streams can be VBR, so keep the guard
+  // intentionally conservative. A file below 25% of bitrate*duration is much
+  // more likely to be a preview/truncated rendition than the original stream.
+  return size < expected * 0.25;
+}
+
 async function fetchValidatedVideoUrl(rawUrl, maxRedirects = 5) {
   let current = validateVideoDownloadUrl(rawUrl);
 
@@ -347,23 +395,51 @@ export async function downloadVideoResult(result, jobId, options = {}) {
       path.join(process.cwd(), "downloads"),
   );
 
-  const cleanCandidates = [result, ...(result.alternates || [])].filter(
-    (candidate, index, all) =>
-      candidate?.url &&
-      candidate.noWatermark === true &&
-      candidate.sourceKind === "video_model" &&
-      all.findIndex((item) => item?.url === candidate.url) === index,
-  );
+  const cleanCandidates = [result, ...(result.alternates || [])]
+    .filter(
+      (candidate, index, all) =>
+        candidate?.url &&
+        candidate.noWatermark === true &&
+        candidate.sourceKind === "video_model" &&
+        all.findIndex((item) => item?.url === candidate.url) === index,
+    )
+    .map((candidate) => ({
+      ...candidate,
+      duration: candidate.duration || result.duration || null,
+    }))
+    .sort(compareCandidates);
+
+  const highestBitrate = cleanCandidates[0]?.bitrate || 0;
+  const highestQualityCandidates =
+    highestBitrate > 0
+      ? cleanCandidates.filter((candidate) => candidate.bitrate === highestBitrate)
+      : cleanCandidates.slice(0, 1);
 
   let firstError = null;
-  for (let index = 0; index < cleanCandidates.length; index += 1) {
-    const candidate = cleanCandidates[index];
+  let qualityError = null;
+  for (let index = 0; index < highestQualityCandidates.length; index += 1) {
+    const candidate = highestQualityCandidates[index];
     try {
       const downloaded = await downloadOnce(candidate.url, jobId, outputDir);
+      if (isSuspiciouslySmallVideo(candidate, downloaded.fileSize)) {
+        const expected = expectedVideoBytes(candidate);
+        await fs.rm(downloaded.localPath, { force: true }).catch(() => {});
+        throw new VideoQualityUnavailableError(
+          `Downloaded clean candidate is suspiciously small (${downloaded.fileSize} bytes${expected ? `, expected roughly ${expected} bytes from bitrate/duration` : ""}); waiting for a valid original stream.`,
+          {
+            url: candidate.url,
+            fileSize: downloaded.fileSize,
+            expectedBytes: expected,
+            bitrate: candidate.bitrate || 0,
+            duration: candidate.duration || null,
+          },
+        );
+      }
       return {
         ...candidate,
         alternates: [],
         candidateCount: cleanCandidates.length,
+        highestQualityCandidateCount: highestQualityCandidates.length,
         url: downloaded.usedUrl,
         localPath: downloaded.localPath,
         fileSize: downloaded.fileSize,
@@ -377,8 +453,26 @@ export async function downloadVideoResult(result, jobId, options = {}) {
       };
     } catch (error) {
       if (!firstError) firstError = error;
+      if (error?.code === "quality_unavailable" && !qualityError) {
+        qualityError = error;
+      }
     }
   }
 
-  throw firstError || new Error("No clean original video stream could be downloaded.");
+  if (qualityError) {
+    throw qualityError;
+  }
+  if (firstError) {
+    throw new VideoQualityUnavailableError(
+      `Highest-quality original stream could not be downloaded yet: ${firstError instanceof Error ? firstError.message : String(firstError)}`,
+      {
+        bitrate: highestBitrate,
+        candidates: highestQualityCandidates.map((candidate) => candidate.url),
+      },
+    );
+  }
+  throw new VideoQualityUnavailableError(
+    "No highest-quality clean original stream is available yet.",
+    { bitrate: highestBitrate, candidates: [] },
+  );
 }

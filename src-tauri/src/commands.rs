@@ -561,19 +561,7 @@ pub fn cancel_generation_job(
     db::cancel_generation_job(&state.db_path, &job_id)
 }
 
-#[tauri::command]
-pub fn reveal_generation_result(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let job = db::get_generation_job(&state.db_path, &job_id)?
-        .ok_or_else(|| "Generation job not found.".to_string())?;
-    let local_path = job
-        .local_path
-        .as_deref()
-        .ok_or_else(|| "This generation does not have a downloaded local file.".to_string())?;
-
-    // local_path is the exact output file recorded when the generation
-    // completed. Outputs may now live either in the managed Downloads folder
-    // or beside the first source file dropped into Dola for that profile
-    // session, so do not restrict reveal to one root directory.
+fn reveal_exact_downloaded_file(local_path: &str) -> Result<(), String> {
     let canonical_file = std::fs::canonicalize(local_path)
         .map_err(|e| format!("Downloaded result file is unavailable: {e}"))?;
     if !canonical_file.is_file() {
@@ -610,6 +598,31 @@ pub fn reveal_generation_result(job_id: String, state: State<'_, AppState>) -> R
             .map_err(|e| format!("Cannot open result directory: {e}"))?;
         Ok(())
     }
+}
+
+#[tauri::command]
+pub fn reveal_generation_result(job_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let job = db::get_generation_job(&state.db_path, &job_id)?
+        .ok_or_else(|| "Generation job not found.".to_string())?;
+    let local_path = job
+        .local_path
+        .as_deref()
+        .ok_or_else(|| "This generation does not have a downloaded local file.".to_string())?;
+
+    // Reveal only the exact path recorded for this completed generation.
+    reveal_exact_downloaded_file(local_path)
+}
+
+#[tauri::command]
+pub fn reveal_profile_download(
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let local_path = db::get_profile_download_path(&state.db_path, &profile_id)?
+        .ok_or_else(|| "This profile does not have a downloaded video from today.".to_string())?;
+
+    // The path comes from profile_download_status and is never supplied by the UI.
+    reveal_exact_downloaded_file(&local_path)
 }
 
 fn api_key_preview(api_key: &str) -> String {

@@ -13,6 +13,7 @@ import {
 import {
   downloadVideoResult,
   selectBestVideoResult,
+  VideoQualityUnavailableError,
 } from "./video-result.mjs";
 
 const browserWebsocketUrl = process.argv[2] || "";
@@ -279,6 +280,16 @@ try {
         continue;
       }
 
+      const qualityCandidates = [selected, ...(selected.alternates || [])]
+        .map(
+          (candidate) =>
+            `${candidate.bitrate || 0}bps@${candidate.width || "?"}x${candidate.height || "?"}`,
+        )
+        .join(", ");
+      log(
+        `clean video_model candidates=${selected.candidateCount || 1}; bitrate-first order: ${qualityCandidates}`,
+      );
+
       // Check once more immediately before download so a first drop that
       // happened during generation still controls the destination.
       await lockSessionDestinationFromFirstDrop(driver);
@@ -304,6 +315,18 @@ try {
       await closeProfileBrowser();
       break;
     } catch (error) {
+      if (
+        error instanceof VideoQualityUnavailableError ||
+        error?.code === "quality_unavailable"
+      ) {
+        consecutiveCdpFailures = 0;
+        log(
+          `highest-quality original is not valid yet; keeping Chrome open and retrying: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await delay(Math.max(pollMs, 30_000));
+        continue;
+      }
+
       consecutiveCdpFailures += 1;
       if (consecutiveCdpFailures >= 5) {
         throw error;

@@ -25,6 +25,7 @@ import {
   openProfiles,
   openSmartProfiles,
   revealGenerationResult,
+  revealProfileDownload,
   revealLocalApiKey,
   rotateLocalApiKey,
   rotateProxyPoolItem,
@@ -1587,12 +1588,23 @@ function App() {
                             {profile.isRunning ? "Running" : "Stopped"}
                           </span>
                           {profile.latestDownloadPath && (
-                            <span
-                              className="download-status downloaded"
-                              title={
+                            <button
+                              type="button"
+                              className="download-status downloaded download-status-button"
+                              title={`Open folder: ${
                                 profile.latestDownloadPath ||
                                 profile.latestDownloadFileName ||
-                                undefined
+                                "downloaded video"
+                              }`}
+                              aria-label={`Open folder containing ${
+                                profile.latestDownloadFileName || "downloaded video"
+                              }`}
+                              disabled={busy}
+                              onClick={() =>
+                                void perform(
+                                  () => revealProfileDownload(profile.id),
+                                  "Opened downloaded video folder.",
+                                )
                               }
                             >
                               <b>✓</b>
@@ -1602,7 +1614,7 @@ function App() {
                                   {relativeTime(profile.latestDownloadedAt)}
                                 </small>
                               )}
-                            </span>
+                            </button>
                           )}
                         </div>
 
@@ -1648,6 +1660,21 @@ function App() {
                               ⋯
                             </summary>
                             <div className="profile-action-popover">
+                              {profile.latestDownloadPath && (
+                                <button
+                                  disabled={busy}
+                                  onClick={(event) => {
+                                    const details = event.currentTarget.closest("details");
+                                    if (details) details.open = false;
+                                    void perform(
+                                      () => revealProfileDownload(profile.id),
+                                      "Opened downloaded video folder.",
+                                    );
+                                  }}
+                                >
+                                  Open downloaded video folder
+                                </button>
+                              )}
                               <button
                                 disabled={busy}
                                 onClick={(event) => {

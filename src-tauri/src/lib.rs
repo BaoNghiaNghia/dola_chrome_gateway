@@ -261,6 +261,7 @@ pub fn run() {
             commands::update_generation_job,
             commands::cancel_generation_job,
             commands::reveal_generation_result,
+            commands::reveal_profile_download,
             commands::get_local_api_state,
             commands::set_local_api_enabled,
             commands::set_local_api_port,

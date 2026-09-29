@@ -176,6 +176,10 @@ export async function revealGenerationResult(jobId: string): Promise<void> {
   return invoke("reveal_generation_result", { jobId });
 }
 
+export async function revealProfileDownload(profileId: string): Promise<void> {
+  return invoke("reveal_profile_download", { profileId });
+}
+
 export async function getLocalApiState(): Promise<LocalApiState> {
   if (!isTauri()) {
     return {

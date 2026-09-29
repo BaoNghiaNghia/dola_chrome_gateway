@@ -709,6 +709,31 @@ button:disabled {
   color: #25815d;
 }
 
+.download-status-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.download-status-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.download-status-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.download-status-button:disabled {
+  cursor: default;
+  opacity: .65;
+  text-decoration: none;
+}
+
 .download-status.downloaded b {
   width: 14px;
   height: 14px;

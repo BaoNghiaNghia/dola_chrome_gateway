@@ -474,6 +474,33 @@ pub fn record_profile_download(
     Ok(())
 }
 
+pub fn get_profile_download_path(
+    db_path: &Path,
+    profile_id: &str,
+) -> Result<Option<String>, String> {
+    let conn = connection(db_path)?;
+    let value = conn
+        .query_row(
+            "SELECT local_path, downloaded_at
+             FROM profile_download_status
+             WHERE profile_id = ?1",
+            params![profile_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let Some((local_path, downloaded_at)) = value else {
+        return Ok(None);
+    };
+    let is_today = DateTime::parse_from_rfc3339(&downloaded_at)
+        .ok()
+        .map(|time| time.with_timezone(&Local).date_naive() == Local::now().date_naive())
+        .unwrap_or(false);
+
+    Ok(is_today.then_some(local_path))
+}
+
 fn list_profile_download_status_conn(
     conn: &Connection,
 ) -> Result<HashMap<String, (String, String, String)>, String> {
