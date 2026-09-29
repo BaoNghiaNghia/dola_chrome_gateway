@@ -6,7 +6,12 @@ if [ "$DOLA_SKIP_AUTO_BUILD" = "1" ]; then
   exit 0
 fi
 
-echo "[Dola] Verifying and rebuilding portable tool before commit..."
+if powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cache.ps1 -Action check -Kind portable; then
+  echo "[Dola] Portable build already verified for current source; skipping duplicate rebuild."
+  exit 0
+fi
+
+echo "[Dola] Source changed since the last portable build; rebuilding before commit..."
 npm run build:portable
 
 echo "[Dola] Portable build passed."

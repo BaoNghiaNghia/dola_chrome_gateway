@@ -12,6 +12,7 @@ dist
 dist-ssr
 release
 src-tauri/target-build
+.build-cache
 .cam-native-build*
 BUILD_AUTOMATION.tmp
 *.local

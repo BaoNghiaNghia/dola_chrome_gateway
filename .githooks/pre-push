@@ -6,7 +6,12 @@ if [ "$DOLA_SKIP_AUTO_BUILD" = "1" ]; then
   exit 0
 fi
 
-echo "[Dola] Building Windows installer before push..."
+if powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cache.ps1 -Action check -Kind windows; then
+  echo "[Dola] Windows build already verified for current source; skipping duplicate rebuild."
+  exit 0
+fi
+
+echo "[Dola] Source changed since the last Windows build; rebuilding before push..."
 npm run build:win
 
 echo "[Dola] Windows build passed. Push may continue."

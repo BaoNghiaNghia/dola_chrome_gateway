@@ -135,6 +135,21 @@ if (-not $Artifacts) {
   throw "Build completed, but no Windows artifacts were collected."
 }
 
+$BuildCacheScript = Join-Path $PSScriptRoot "build-cache.ps1"
+if (Test-Path $BuildCacheScript -PathType Leaf) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $BuildCacheScript -Action write -Kind portable
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not save portable build verification stamp."
+  }
+
+  if (-not $PortableOnly) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $BuildCacheScript -Action write -Kind windows
+    if ($LASTEXITCODE -ne 0) {
+      throw "Could not save Windows build verification stamp."
+    }
+  }
+}
+
 Write-Host ""
 Write-Host "Build complete." -ForegroundColor Green
 Write-Host "Artifacts: $ReleaseDir" -ForegroundColor Green
