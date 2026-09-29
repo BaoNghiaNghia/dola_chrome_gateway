@@ -117,6 +117,7 @@ Copy-Item (Join-Path $Root "adapter") (Join-Path $PortableDir "adapter") -Recurs
 $RequiredAdapterFiles = @(
   "seedance-adapter.mjs",
   "profile-download-watcher.mjs",
+  "source-path-resolver.mjs",
   "seedance-driver.mjs",
   "video-result.mjs",
   "cdp.mjs"

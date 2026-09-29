@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
-    let settings = db::get_worker_settings(db_path)?;
+fn allocation_tick_with_settings(
+    db_path: &Path,
+    settings: &db::WorkerSettingsRecord,
+) -> Result<usize, String> {
     if !settings.enabled {
         return Ok(0);
     }
@@ -19,9 +21,14 @@ pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
         return Err("Smart Scheduler is disabled.".into());
     }
 
+    // Fast idle path: a cheap EXISTS query avoids loading job rows and all
+    // profile/proxy/operational state when there is no runnable work.
+    if !db::has_runnable_queued_jobs(db_path)? {
+        return Ok(0);
+    }
+
     let active_count = db::count_active_job_assignments(db_path)?;
     if active_count >= settings.max_concurrent_jobs {
-        db::record_worker_tick(db_path, None)?;
         return Ok(0);
     }
 
@@ -47,11 +54,7 @@ pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
     });
 
     if ready_profiles.is_empty() {
-        if !db::list_queued_generation_jobs(db_path, 1)?.is_empty() {
-            return Err("No scheduler-ready profiles are available for queued jobs.".into());
-        }
-        db::record_worker_tick(db_path, None)?;
-        return Ok(0);
+        return Err("No scheduler-ready profiles are available for queued jobs.".into());
     }
 
     let claim_count = capacity.min(ready_profiles.len());
@@ -64,8 +67,12 @@ pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
         }
     }
 
-    db::record_worker_tick(db_path, None)?;
     Ok(assigned)
+}
+
+pub fn allocation_tick(db_path: &Path) -> Result<usize, String> {
+    let settings = db::get_worker_settings(db_path)?;
+    allocation_tick_with_settings(db_path, &settings)
 }
 
 pub fn start(db_path: PathBuf) -> Result<BackgroundRuntime, String> {
@@ -88,8 +95,19 @@ pub fn start(db_path: PathBuf) -> Result<BackgroundRuntime, String> {
                     break;
                 }
 
-                if let Err(error) = allocation_tick(&db_path) {
-                    let _ = db::record_worker_tick(&db_path, Some(error.as_str()));
+                match allocation_tick_with_settings(&db_path, &settings) {
+                    Ok(assigned) => {
+                        // Persist only meaningful worker state transitions. Idle ticks no
+                        // longer write SQLite every second.
+                        if assigned > 0 || settings.last_error.is_some() {
+                            let _ = db::record_worker_tick(&db_path, None);
+                        }
+                    }
+                    Err(error) => {
+                        if settings.last_error.as_deref() != Some(error.as_str()) {
+                            let _ = db::record_worker_tick(&db_path, Some(error.as_str()));
+                        }
+                    }
                 }
 
                 let sleep_ms = settings.poll_interval_ms.clamp(250, 60_000);

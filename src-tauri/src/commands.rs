@@ -570,17 +570,14 @@ pub fn reveal_generation_result(job_id: String, state: State<'_, AppState>) -> R
         .as_deref()
         .ok_or_else(|| "This generation does not have a downloaded local file.".to_string())?;
 
-    let downloads_dir = state.app_data_dir.join("downloads");
-    let canonical_downloads = std::fs::canonicalize(&downloads_dir)
-        .map_err(|e| format!("Cannot resolve managed downloads directory: {e}"))?;
+    // local_path is the exact output file recorded when the generation
+    // completed. Outputs may now live either in the managed Downloads folder
+    // or beside the first source file dropped into Dola for that profile
+    // session, so do not restrict reveal to one root directory.
     let canonical_file = std::fs::canonicalize(local_path)
         .map_err(|e| format!("Downloaded result file is unavailable: {e}"))?;
-
-    if !canonical_file.starts_with(&canonical_downloads) {
-        return Err(
-            "Only files inside the managed Dola Gateway downloads directory can be revealed."
-                .into(),
-        );
+    if !canonical_file.is_file() {
+        return Err("Downloaded result path is not a file.".into());
     }
 
     #[cfg(target_os = "windows")]

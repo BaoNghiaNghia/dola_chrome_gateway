@@ -13,8 +13,12 @@ use uuid::Uuid;
 
 fn connection(db_path: &Path) -> Result<Connection, String> {
     let conn = Connection::open(db_path).map_err(|e| format!("Cannot open database: {e}"))?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|e| format!("Cannot enable database constraints: {e}"))?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA synchronous = NORMAL;",
+    )
+    .map_err(|e| format!("Cannot configure database connection: {e}"))?;
     Ok(conn)
 }
 
@@ -154,6 +158,8 @@ fn get_operational_state_conn(
 
 pub fn init(db_path: &Path) -> Result<(), String> {
     let conn = connection(db_path)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL;")
+        .map_err(|e| format!("Cannot enable SQLite WAL mode: {e}"))?;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS profiles (
@@ -330,6 +336,8 @@ pub fn init(db_path: &Path) -> Result<(), String> {
             ON workspace_profiles(workspace_id, position);
         CREATE INDEX IF NOT EXISTS idx_generation_jobs_status
             ON generation_jobs(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_generation_jobs_created_at
+            ON generation_jobs(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_operational_scheduler
             ON profile_operational_state(scheduling_enabled, session_status);
         "#,
@@ -1537,6 +1545,22 @@ pub fn count_queued_jobs(db_path: &Path) -> Result<usize, String> {
     .map_err(|e| e.to_string())
 }
 
+pub fn has_runnable_queued_jobs(db_path: &Path) -> Result<bool, String> {
+    let conn = connection(db_path)?;
+    let now = Utc::now().to_rfc3339();
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM generation_jobs
+            WHERE status = 'queued'
+              AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+            LIMIT 1
+         )",
+        params![now],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn list_active_job_profile_ids(db_path: &Path) -> Result<Vec<String>, String> {
     let conn = connection(db_path)?;
     let mut stmt = conn
@@ -1755,7 +1779,7 @@ const GENERATION_JOB_SELECT: &str =
 
 pub fn list_generation_jobs(db_path: &Path) -> Result<Vec<GenerationJob>, String> {
     let conn = connection(db_path)?;
-    let sql = format!("{GENERATION_JOB_SELECT} ORDER BY created_at DESC");
+    let sql = format!("{GENERATION_JOB_SELECT} ORDER BY created_at DESC LIMIT 200");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let jobs = stmt
         .query_map([], row_to_generation_job)

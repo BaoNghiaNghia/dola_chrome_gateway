@@ -556,6 +556,22 @@ function App() {
     text: string;
   } | null>(null);
 
+  function schedulerCountsFromProfiles(
+    nextProfiles: BrowserProfile[],
+    enabled: boolean,
+  ): SchedulerState {
+    const stopped = nextProfiles.filter((profile) => !profile.isRunning);
+    return {
+      enabled,
+      readyProfiles: stopped.filter(
+        (profile) => profile.operational.availability === "ready",
+      ).length,
+      blockedProfiles: stopped.filter(
+        (profile) => profile.operational.availability !== "ready",
+      ).length,
+    };
+  }
+
   function applyProfiles(nextProfiles: BrowserProfile[]) {
     setProfiles(nextProfiles);
     setSelected((current) =>
@@ -617,14 +633,15 @@ function App() {
       }
 
       if (view === "profiles") {
-        const [nextProfiles, nextSystem, nextScheduler] = await Promise.all([
+        const [nextProfiles, nextSystem] = await Promise.all([
           listProfiles(),
           getSystemInfo(),
-          getSchedulerState(),
         ]);
         applyProfiles(nextProfiles);
         setSystem(nextSystem);
-        setScheduler(nextScheduler);
+        setScheduler((current) =>
+          schedulerCountsFromProfiles(nextProfiles, current.enabled),
+        );
         return;
       }
 
@@ -643,7 +660,6 @@ function App() {
       const [
         nextProfiles,
         nextSystem,
-        nextScheduler,
         nextJobs,
         nextLocalApi,
         nextWorker,
@@ -651,7 +667,6 @@ function App() {
       ] = await Promise.all([
         listProfiles(),
         getSystemInfo(),
-        getSchedulerState(),
         listGenerationJobs(),
         getLocalApiState(),
         getWorkerState(),
@@ -659,7 +674,9 @@ function App() {
       ]);
       applyProfiles(nextProfiles);
       setSystem(nextSystem);
-      setScheduler(nextScheduler);
+      setScheduler((current) =>
+        schedulerCountsFromProfiles(nextProfiles, current.enabled),
+      );
       setGenerationJobs(nextJobs);
       setLocalApi(nextLocalApi);
       setApiPortDraft(String(nextLocalApi.port));
