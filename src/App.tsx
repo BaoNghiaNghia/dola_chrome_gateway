@@ -673,6 +673,10 @@ function App() {
   }
 
   useEffect(() => {
+    void refresh(true);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
 
@@ -683,11 +687,7 @@ function App() {
       }
     };
 
-    void refresh(true).finally(() => {
-      if (!cancelled) {
-        timer = window.setTimeout(poll, 5000);
-      }
-    });
+    void poll();
 
     return () => {
       cancelled = true;

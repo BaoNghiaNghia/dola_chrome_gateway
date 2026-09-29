@@ -258,6 +258,35 @@ fn download_storage_dir(_app_data_dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+fn rotate_log_if_needed(log_path: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::metadata(log_path) else {
+        return Ok(());
+    };
+    if metadata.len() <= MAX_LOG_BYTES {
+        return Ok(());
+    }
+
+    let file_name = log_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("runtime.log");
+    let archived = log_path.with_file_name(format!("{file_name}.1"));
+    if archived.exists() {
+        fs::remove_file(&archived)
+            .map_err(|e| format!("Cannot remove old rotated log {}: {e}", archived.display()))?;
+    }
+    fs::rename(log_path, &archived).map_err(|e| {
+        format!(
+            "Cannot rotate log {} to {}: {e}",
+            log_path.display(),
+            archived.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn open_named_log_file(
     app_data_dir: &Path,
     name: &str,
@@ -266,6 +295,7 @@ fn open_named_log_file(
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("Cannot create adapter log directory: {e}"))?;
     let log_path = logs_dir.join(name);
+    rotate_log_if_needed(&log_path)?;
     let file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -308,8 +338,9 @@ pub fn start_profile_download_watcher(
     let status_path = status_dir.join(format!("{profile_id}.json"));
     let _ = fs::remove_file(&status_path);
 
+    let watcher_log_name = format!("profile-download-watcher-{profile_id}.log");
     let (_log_path, stdout_file) =
-        open_named_log_file(app_data_dir, "profile-download-watcher.log")?;
+        open_named_log_file(app_data_dir, &watcher_log_name)?;
     let stderr_file = stdout_file
         .try_clone()
         .map_err(|e| format!("Cannot clone profile watcher log handle: {e}"))?;

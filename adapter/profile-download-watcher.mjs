@@ -15,7 +15,7 @@ const profileId = process.argv[3] || "profile";
 const browserPid = Number(process.argv[4] || 0);
 const outputDir = process.env.DOLA_DOWNLOAD_DIR || "";
 const statusFile = process.env.DOLA_PROFILE_STATUS_FILE || "";
-const pollMs = Math.max(2_000, Number(process.env.DOLA_PROFILE_WATCHER_POLL_MS || 3_000));
+const pollMs = Math.max(3_000, Number(process.env.DOLA_PROFILE_WATCHER_POLL_MS || 5_000));
 
 if (!browserWebsocketUrl) {
   console.error("[profile-watcher] Missing browser websocket URL.");
@@ -25,6 +25,7 @@ if (!browserWebsocketUrl) {
 const cdp = new CdpClient(browserWebsocketUrl);
 const downloadedUrls = new Set();
 let consecutiveCdpFailures = 0;
+let activeConversationId = null;
 
 function log(message) {
   console.log(
@@ -110,16 +111,20 @@ try {
 
   while (true) {
     try {
-      const state = await driver.snapshot();
+      if (!activeConversationId) {
+        const state = await driver.snapshot();
+        activeConversationId = extractConversationId(state?.url);
+        if (!activeConversationId) {
+          await delay(pollMs);
+          continue;
+        }
+        log(`watching conversation ${activeConversationId}`);
+      }
       consecutiveCdpFailures = 0;
 
-      const conversationId = extractConversationId(state?.url);
-      if (!conversationId) {
-        await delay(pollMs);
-        continue;
-      }
-
-      const poll = await driver.pollConversationApi(conversationId).catch(() => null);
+      const poll = await driver
+        .pollConversationApi(activeConversationId)
+        .catch(() => null);
       if (!poll?.ok) {
         await delay(pollMs);
         continue;
@@ -141,7 +146,7 @@ try {
 
       const downloaded = await downloadVideoResult(
         finalized,
-        `${profileId}-${conversationId}`,
+        `${profileId}-${activeConversationId}`,
         { outputDir },
       );
 

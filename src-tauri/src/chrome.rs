@@ -596,16 +596,32 @@ pub fn find_profile_pid(profile_path: &Path) -> Result<Option<u32>, String> {
 
 #[cfg(target_os = "windows")]
 pub fn is_pid_running(pid: u32) -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output();
+    use std::ffi::c_void;
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.contains(&format!(",\"{pid}\","))
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(
+            desired_access: u32,
+            inherit_handle: i32,
+            process_id: u32,
+        ) -> *mut c_void;
+        fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+        fn CloseHandle(object: *mut c_void) -> i32;
+    }
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
         }
-        _ => false,
+
+        let mut exit_code = 0_u32;
+        let ok = GetExitCodeProcess(process, &mut exit_code);
+        let _ = CloseHandle(process);
+        ok != 0 && exit_code == STILL_ACTIVE
     }
 }
 

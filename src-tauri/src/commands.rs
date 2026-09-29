@@ -14,7 +14,7 @@ use crate::proxy;
 use crate::state::AppState;
 use crate::worker;
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -50,6 +50,7 @@ fn ensure_profile_storage_available(state: &AppState) -> Result<(), String> {
 }
 
 const PROCESS_REFRESH_TTL: Duration = Duration::from_millis(1_500);
+const PROCESS_DISCOVERY_TTL: Duration = Duration::from_secs(60);
 
 fn ingest_profile_download_completions(state: &AppState) -> Result<(), String> {
     for (profile_id, completion) in
@@ -65,9 +66,11 @@ fn ingest_profile_download_completions(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-fn sync_processes(state: &AppState, force_proxy_cleanup: bool) -> Result<(), String> {
-    let profile_paths = db::list_profile_paths(&state.db_path)?;
-    let discovered = chrome::discover_profile_pids(&profile_paths)?;
+fn apply_process_snapshot(
+    discovered: HashMap<String, u32>,
+    state: &AppState,
+    force_proxy_cleanup: bool,
+) -> Result<(), String> {
     let running_ids = discovered.keys().cloned().collect::<Vec<_>>();
     let running_set = running_ids.iter().cloned().collect::<HashSet<_>>();
 
@@ -107,14 +110,40 @@ fn sync_processes(state: &AppState, force_proxy_cleanup: bool) -> Result<(), Str
     Ok(())
 }
 
+fn sync_processes_full(state: &AppState, force_proxy_cleanup: bool) -> Result<(), String> {
+    let profile_paths = db::list_profile_paths(&state.db_path)?;
+    let discovered = chrome::discover_profile_pids(&profile_paths)?;
+    apply_process_snapshot(discovered, state, force_proxy_cleanup)
+}
+
+fn sync_known_processes(state: &AppState) -> Result<(), String> {
+    let mut discovered = state
+        .processes
+        .lock()
+        .map_err(|_| "Process state is unavailable.".to_string())?
+        .clone();
+    discovered.retain(|_, pid| chrome::is_pid_running(*pid));
+    apply_process_snapshot(discovered, state, false)
+}
+
 fn refresh_processes(state: &AppState) -> Result<(), String> {
-    let mut refreshed_at = state
+    let first_discovery = state
+        .process_discovery_at
+        .lock()
+        .map_err(|_| "Process discovery state is unavailable.".to_string())?
+        .is_none();
+
+    sync_processes_full(state, first_discovery)?;
+
+    let now = Instant::now();
+    *state
         .process_refresh_at
         .lock()
-        .map_err(|_| "Process refresh state is unavailable.".to_string())?;
-    let first_refresh = refreshed_at.is_none();
-    sync_processes(state, first_refresh)?;
-    *refreshed_at = Some(Instant::now());
+        .map_err(|_| "Process refresh state is unavailable.".to_string())? = Some(now);
+    *state
+        .process_discovery_at
+        .lock()
+        .map_err(|_| "Process discovery state is unavailable.".to_string())? = Some(now);
     Ok(())
 }
 
@@ -131,8 +160,30 @@ fn refresh_processes_cached(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
 
-    let first_refresh = refreshed_at.is_none();
-    sync_processes(state, first_refresh)?;
+    let full_discovery_due = state
+        .process_discovery_at
+        .lock()
+        .map_err(|_| "Process discovery state is unavailable.".to_string())?
+        .as_ref()
+        .map(|instant| instant.elapsed() >= PROCESS_DISCOVERY_TTL)
+        .unwrap_or(true);
+
+    if full_discovery_due {
+        let first_discovery = state
+            .process_discovery_at
+            .lock()
+            .map_err(|_| "Process discovery state is unavailable.".to_string())?
+            .is_none();
+        sync_processes_full(state, first_discovery)?;
+        *state
+            .process_discovery_at
+            .lock()
+            .map_err(|_| "Process discovery state is unavailable.".to_string())? =
+            Some(Instant::now());
+    } else {
+        sync_known_processes(state)?;
+    }
+
     *refreshed_at = Some(Instant::now());
     Ok(())
 }

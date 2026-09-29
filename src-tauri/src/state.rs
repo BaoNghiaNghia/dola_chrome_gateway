@@ -46,6 +46,7 @@ pub struct AppState {
     pub adapter_runtime: Mutex<Option<AdapterProcessRuntime>>,
     pub profile_download_watchers: Mutex<HashMap<String, ProfileDownloadWatcherRuntime>>,
     pub process_refresh_at: Mutex<Option<Instant>>,
+    pub process_discovery_at: Mutex<Option<Instant>>,
     pub adapter_config: Mutex<AdapterRuntimeConfig>,
     pub adapter_last_error: Mutex<Option<String>>,
 }
@@ -68,6 +69,7 @@ impl AppState {
             adapter_runtime: Mutex::new(None),
             profile_download_watchers: Mutex::new(HashMap::new()),
             process_refresh_at: Mutex::new(None),
+            process_discovery_at: Mutex::new(None),
             adapter_config: Mutex::new(AdapterRuntimeConfig::default()),
             adapter_last_error: Mutex::new(None),
         }
