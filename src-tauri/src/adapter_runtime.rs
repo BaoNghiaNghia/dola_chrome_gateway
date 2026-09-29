@@ -1,4 +1,5 @@
 use chrono::Utc;
+use serde::Deserialize;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,13 @@ pub struct AdapterProcessRuntime {
     pub script_path: PathBuf,
     pub log_path: PathBuf,
     pub started_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDownloadCompletion {
+    pub local_path: String,
+    pub downloaded_at: String,
 }
 
 pub struct ProfileDownloadWatcherRuntime {
@@ -294,6 +302,12 @@ pub fn start_profile_download_watcher(
         )
     })?;
 
+    let status_dir = app_data_dir.join("runtime").join("profile-download-status");
+    fs::create_dir_all(&status_dir)
+        .map_err(|e| format!("Cannot create profile download status directory: {e}"))?;
+    let status_path = status_dir.join(format!("{profile_id}.json"));
+    let _ = fs::remove_file(&status_path);
+
     let (_log_path, stdout_file) =
         open_named_log_file(app_data_dir, "profile-download-watcher.log")?;
     let stderr_file = stdout_file
@@ -317,6 +331,7 @@ pub fn start_profile_download_watcher(
         .arg(browser_pid.to_string())
         .current_dir(&node_working_dir)
         .env("DOLA_DOWNLOAD_DIR", &download_dir)
+        .env("DOLA_PROFILE_STATUS_FILE", &status_path)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .stdin(Stdio::null());
@@ -343,6 +358,40 @@ pub fn start_profile_download_watcher(
     }
 
     Ok(ProfileDownloadWatcherRuntime { child })
+}
+
+pub fn collect_profile_download_completions(
+    app_data_dir: &Path,
+) -> Result<Vec<(String, ProfileDownloadCompletion)>, String> {
+    let status_dir = app_data_dir.join("runtime").join("profile-download-status");
+    let Ok(entries) = fs::read_dir(&status_dir) else {
+        return Ok(Vec::new());
+    };
+
+    let mut completions = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(profile_id) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(_) => continue,
+        };
+        let completion = match serde_json::from_str::<ProfileDownloadCompletion>(&raw) {
+            Ok(completion) => completion,
+            Err(_) => continue,
+        };
+
+        completions.push((profile_id.to_string(), completion));
+        let _ = fs::remove_file(&path);
+    }
+
+    Ok(completions)
 }
 
 pub fn start(

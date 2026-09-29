@@ -666,24 +666,27 @@ pub fn close_profile(profile_path: &Path, known_pid: Option<u32>) -> Result<(), 
 
     request_graceful_close(pid)?;
 
+    // We already resolved the browser root PID above. Re-scanning every Chrome
+    // command line through PowerShell/CIM on each wait tick is unnecessarily
+    // expensive, so only follow the resolved PID while waiting for shutdown.
     let graceful_deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < graceful_deadline {
-        if find_profile_pid(profile_path)?.is_none() {
+        if !is_pid_running(pid) {
             let _ = mark_profile_shutdown_clean(profile_path);
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(500));
     }
 
     force_close_process_tree(pid)?;
 
     let force_deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < force_deadline {
-        if find_profile_pid(profile_path)?.is_none() {
+        if !is_pid_running(pid) {
             let _ = mark_profile_shutdown_clean(profile_path);
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(300));
     }
 
     Err("Chrome process tree did not exit after force-close.".into())

@@ -12,6 +12,8 @@ dist
 dist-ssr
 release
 src-tauri/target-build
+.cam-native-build*
+BUILD_AUTOMATION.tmp
 *.local
 
 # Editor directories and files

@@ -5,8 +5,9 @@ use crate::models::{
     ProxySettingsRequest, UpdateGenerationJobRequest, UpdateProfileOperationalStateRequest,
     UpdateProfileRequest, Workspace,
 };
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -198,6 +199,14 @@ pub fn init(db_path: &Path) -> Result<(), String> {
             remaining INTEGER,
             last_used_at TEXT,
             updated_at TEXT NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS profile_download_status (
+            profile_id TEXT PRIMARY KEY,
+            local_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            downloaded_at TEXT NOT NULL,
             FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
         );
 
@@ -431,6 +440,186 @@ fn get_proxy_settings_conn(conn: &Connection, profile_id: &str) -> Result<ProxyS
 pub fn get_proxy_settings(db_path: &Path, profile_id: &str) -> Result<ProxySettings, String> {
     let conn = connection(db_path)?;
     get_proxy_settings_conn(&conn, profile_id)
+}
+pub fn record_profile_download(
+    db_path: &Path,
+    profile_id: &str,
+    local_path: &str,
+    downloaded_at: &str,
+) -> Result<(), String> {
+    let file_name = Path::new(local_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(local_path)
+        .to_string();
+    let conn = connection(db_path)?;
+    conn.execute(
+        "INSERT INTO profile_download_status (profile_id, local_path, file_name, downloaded_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(profile_id) DO UPDATE SET
+             local_path = excluded.local_path,
+             file_name = excluded.file_name,
+             downloaded_at = excluded.downloaded_at",
+        params![profile_id, local_path, file_name, downloaded_at],
+    )
+    .map_err(|e| format!("Cannot record profile download status: {e}"))?;
+    Ok(())
+}
+
+fn list_profile_download_status_conn(
+    conn: &Connection,
+) -> Result<HashMap<String, (String, String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT profile_id, local_path, file_name, downloaded_at
+             FROM profile_download_status",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let today = Local::now().date_naive();
+    let mut result = HashMap::new();
+    for row in rows {
+        let (profile_id, local_path, file_name, downloaded_at) =
+            row.map_err(|e| e.to_string())?;
+        let is_today = DateTime::parse_from_rfc3339(&downloaded_at)
+            .ok()
+            .map(|time| time.with_timezone(&Local).date_naive() == today)
+            .unwrap_or(false);
+        if is_today {
+            result.insert(profile_id, (local_path, file_name, downloaded_at));
+        }
+    }
+    Ok(result)
+}
+
+fn list_proxy_settings_conn(conn: &Connection) -> Result<HashMap<String, ProxySettings>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT profile_id, enabled, protocol, host, port, auth_username, rotation_mode,
+                    rotation_url, last_ip, health, last_latency_ms, last_checked_at
+             FROM profile_proxy_settings",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let latency: Option<i64> = row.get(10)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                ProxySettings {
+                    enabled: row.get::<_, i64>(1)? != 0,
+                    protocol: row.get(2)?,
+                    host: row.get(3)?,
+                    port: row.get::<_, i64>(4)?.max(0) as u16,
+                    auth_username: row.get(5)?,
+                    rotation_mode: row.get(6)?,
+                    rotation_url: row.get(7)?,
+                    last_ip: row.get(8)?,
+                    health: row.get(9)?,
+                    last_latency_ms: latency.map(|value| value.max(0) as u64),
+                    last_checked_at: row.get(11)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut result = HashMap::new();
+    for row in rows {
+        let (profile_id, settings) = row.map_err(|e| e.to_string())?;
+        result.insert(profile_id, settings);
+    }
+    Ok(result)
+}
+
+fn list_active_proxy_assignments_conn(
+    conn: &Connection,
+) -> Result<HashMap<String, ActiveProxyAssignment>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.profile_id, p.id, p.name, p.protocol, p.host, p.port,
+                    a.public_ip, a.assigned_at
+             FROM proxy_runtime_assignments a
+             JOIN proxy_pool p ON p.id = a.proxy_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let profile_id: String = row.get(0)?;
+            let protocol: String = row.get(3)?;
+            let host: String = row.get(4)?;
+            let port: i64 = row.get(5)?;
+            Ok((
+                profile_id,
+                ActiveProxyAssignment {
+                    proxy_id: row.get(1)?,
+                    proxy_name: row.get(2)?,
+                    endpoint: format!("{protocol}://{host}:{}", port.max(0)),
+                    public_ip: row.get(6)?,
+                    assigned_at: row.get(7)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut result = HashMap::new();
+    for row in rows {
+        let (profile_id, assignment) = row.map_err(|e| e.to_string())?;
+        result.insert(profile_id, assignment);
+    }
+    Ok(result)
+}
+
+fn list_operational_states_conn(
+    conn: &Connection,
+) -> Result<HashMap<String, ProfileOperationalState>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT profile_id, scheduling_enabled, session_status, login_checked_at,
+                    cooldown_until, rate_limited_until, quota_blocked_until, credit_balance,
+                    used_today, remaining, last_used_at
+             FROM profile_operational_state",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ProfileOperationalState {
+                    scheduling_enabled: row.get::<_, i64>(1)? != 0,
+                    session_status: row.get(2)?,
+                    login_checked_at: row.get(3)?,
+                    cooldown_until: row.get(4)?,
+                    rate_limited_until: row.get(5)?,
+                    quota_blocked_until: row.get(6)?,
+                    credit_balance: row.get(7)?,
+                    used_today: row.get::<_, i64>(8)?.max(0) as u32,
+                    remaining: row
+                        .get::<_, Option<i64>>(9)?
+                        .map(|value| value.max(0) as u32),
+                    last_used_at: row.get(10)?,
+                    availability: String::new(),
+                    availability_reason: None,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut result = HashMap::new();
+    for row in rows {
+        let (profile_id, mut state) = row.map_err(|e| e.to_string())?;
+        derive_availability(&mut state);
+        result.insert(profile_id, state);
+    }
+    Ok(result)
 }
 
 fn row_to_proxy_pool_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProxyPoolItem> {
@@ -785,6 +974,23 @@ pub fn list_available_pool_proxies(
     Ok(items)
 }
 
+pub fn list_profile_paths(db_path: &Path) -> Result<Vec<(String, std::path::PathBuf)>, String> {
+    let conn = connection(db_path)?;
+    let mut stmt = conn
+        .prepare("SELECT id, profile_path FROM profiles")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let path: String = row.get(1)?;
+            Ok((id, std::path::PathBuf::from(path)))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 pub fn list_profiles(db_path: &Path) -> Result<Vec<BrowserProfile>, String> {
     let conn = connection(db_path)?;
     let mut stmt = conn
@@ -801,11 +1007,28 @@ pub fn list_profiles(db_path: &Path) -> Result<Vec<BrowserProfile>, String> {
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    // Load related profile state in four bounded queries instead of issuing
+    // three extra SQLite queries per profile on every UI refresh.
+    let mut proxy_settings = list_proxy_settings_conn(&conn)?;
+    let mut active_assignments = list_active_proxy_assignments_conn(&conn)?;
+    let mut operational_states = list_operational_states_conn(&conn)?;
+    let mut download_status = list_profile_download_status_conn(&conn)?;
 
     for profile in &mut profiles {
-        profile.proxy = get_proxy_settings_conn(&conn, &profile.id)?;
-        profile.active_proxy = get_active_proxy_assignment_conn(&conn, &profile.id)?;
-        profile.operational = get_operational_state_conn(&conn, &profile.id)?;
+        if let Some(settings) = proxy_settings.remove(&profile.id) {
+            profile.proxy = settings;
+        }
+        profile.active_proxy = active_assignments.remove(&profile.id);
+        if let Some(operational) = operational_states.remove(&profile.id) {
+            profile.operational = operational;
+        }
+        if let Some((local_path, file_name, downloaded_at)) = download_status.remove(&profile.id) {
+            profile.latest_download_path = Some(local_path);
+            profile.latest_download_file_name = Some(file_name);
+            profile.latest_downloaded_at = Some(downloaded_at);
+        }
     }
 
     Ok(profiles)
@@ -1790,6 +2013,10 @@ pub fn complete_adapter_job(
             params![&now, profile_id],
         )
         .map_err(|e| format!("Cannot update profile usage: {e}"))?;
+
+        if let Some(local_path) = local_path {
+            record_profile_download(db_path, profile_id, local_path, &now)?;
+        }
     }
 
     Ok(job)

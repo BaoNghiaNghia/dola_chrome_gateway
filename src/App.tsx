@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   cancelGenerationJob,
@@ -550,18 +550,99 @@ function App() {
     () => loadUiPreferences().advancedRuntimeOpen,
   );
   const [busy, setBusy] = useState(false);
+  const refreshInFlight = useRef(false);
   const [banner, setBanner] = useState<{
     kind: "error" | "success";
     text: string;
   } | null>(null);
 
-  async function refresh() {
+  function applyProfiles(nextProfiles: BrowserProfile[]) {
+    setProfiles(nextProfiles);
+    setSelected((current) =>
+      current.filter((id) =>
+        nextProfiles.some((profile) => profile.id === id),
+      ),
+    );
+  }
+
+  function applyAutomation(nextAutomation: AutomationRuntimeState) {
+    setAutomationRuntime(nextAutomation);
+    if (!nextAutomation.running) {
+      setAutomationDraft({
+        concurrency: nextAutomation.concurrency,
+        timeoutSeconds: nextAutomation.timeoutSeconds,
+        manualVerificationSeconds: nextAutomation.manualVerificationSeconds,
+      });
+    }
+  }
+
+  async function refresh(full = true) {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+
     try {
+      if (full) {
+        const [
+          nextProfiles,
+          nextWorkspaces,
+          nextSystem,
+          nextProxyPool,
+          nextScheduler,
+          nextJobs,
+          nextLocalApi,
+          nextWorker,
+          nextAutomation,
+        ] = await Promise.all([
+          listProfiles(),
+          listWorkspaces(),
+          getSystemInfo(),
+          getProxyPoolState(),
+          getSchedulerState(),
+          listGenerationJobs(),
+          getLocalApiState(),
+          getWorkerState(),
+          getAutomationRuntimeState(),
+        ]);
+        applyProfiles(nextProfiles);
+        setWorkspaces(nextWorkspaces);
+        setSystem(nextSystem);
+        setProxyPool(nextProxyPool);
+        setScheduler(nextScheduler);
+        setGenerationJobs(nextJobs);
+        setLocalApi(nextLocalApi);
+        setApiPortDraft(String(nextLocalApi.port));
+        setWorkerState(nextWorker);
+        applyAutomation(nextAutomation);
+        return;
+      }
+
+      if (view === "profiles") {
+        const [nextProfiles, nextSystem, nextScheduler] = await Promise.all([
+          listProfiles(),
+          getSystemInfo(),
+          getSchedulerState(),
+        ]);
+        applyProfiles(nextProfiles);
+        setSystem(nextSystem);
+        setScheduler(nextScheduler);
+        return;
+      }
+
+      if (view === "proxies") {
+        const [nextProfiles, nextSystem, nextProxyPool] = await Promise.all([
+          listProfiles(),
+          getSystemInfo(),
+          getProxyPoolState(),
+        ]);
+        applyProfiles(nextProfiles);
+        setSystem(nextSystem);
+        setProxyPool(nextProxyPool);
+        return;
+      }
+
       const [
         nextProfiles,
-        nextWorkspaces,
         nextSystem,
-        nextProxyPool,
         nextScheduler,
         nextJobs,
         nextLocalApi,
@@ -569,47 +650,50 @@ function App() {
         nextAutomation,
       ] = await Promise.all([
         listProfiles(),
-        listWorkspaces(),
         getSystemInfo(),
-        getProxyPoolState(),
         getSchedulerState(),
         listGenerationJobs(),
         getLocalApiState(),
         getWorkerState(),
         getAutomationRuntimeState(),
       ]);
-      setProfiles(nextProfiles);
-      setWorkspaces(nextWorkspaces);
+      applyProfiles(nextProfiles);
       setSystem(nextSystem);
-      setProxyPool(nextProxyPool);
       setScheduler(nextScheduler);
       setGenerationJobs(nextJobs);
       setLocalApi(nextLocalApi);
       setApiPortDraft(String(nextLocalApi.port));
       setWorkerState(nextWorker);
-      setAutomationRuntime(nextAutomation);
-      if (!nextAutomation.running) {
-        setAutomationDraft({
-          concurrency: nextAutomation.concurrency,
-          timeoutSeconds: nextAutomation.timeoutSeconds,
-          manualVerificationSeconds: nextAutomation.manualVerificationSeconds,
-        });
-      }
-      setSelected((current) =>
-        current.filter((id) =>
-          nextProfiles.some((profile) => profile.id === id),
-        ),
-      );
+      applyAutomation(nextAutomation);
     } catch (error) {
       setBanner({ kind: "error", text: errorMessage(error) });
+    } finally {
+      refreshInFlight.current = false;
     }
   }
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 5000);
-    return () => window.clearInterval(timer);
-  }, []);
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      await refresh(false);
+      if (!cancelled) {
+        timer = window.setTimeout(poll, 5000);
+      }
+    };
+
+    void refresh(true).finally(() => {
+      if (!cancelled) {
+        timer = window.setTimeout(poll, 5000);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [view]);
 
   useEffect(() => {
     window.localStorage.setItem(

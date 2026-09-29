@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { CdpClient, delay } from "./cdp.mjs";
 import {
   extractConversationId,
@@ -13,6 +14,7 @@ const browserWebsocketUrl = process.argv[2] || "";
 const profileId = process.argv[3] || "profile";
 const browserPid = Number(process.argv[4] || 0);
 const outputDir = process.env.DOLA_DOWNLOAD_DIR || "";
+const statusFile = process.env.DOLA_PROFILE_STATUS_FILE || "";
 const pollMs = Math.max(2_000, Number(process.env.DOLA_PROFILE_WATCHER_POLL_MS || 3_000));
 
 if (!browserWebsocketUrl) {
@@ -28,6 +30,21 @@ function log(message) {
   console.log(
     `[${new Date().toISOString()}] [profile-watcher:${profileId}] ${message}`,
   );
+}
+
+async function persistDownloadStatus(downloaded) {
+  if (!statusFile) return;
+
+  const tempFile = `${statusFile}.tmp`;
+  await fs.writeFile(
+    tempFile,
+    JSON.stringify({
+      localPath: downloaded.localPath,
+      downloadedAt: new Date().toISOString(),
+    }),
+    "utf8",
+  );
+  await fs.rename(tempFile, statusFile);
 }
 
 function browserProcessIsAlive() {
@@ -133,6 +150,7 @@ try {
       log(
         `downloaded ${downloaded.localPath} (${downloaded.fileSize || 0} bytes, noWatermark=${downloaded.noWatermark})`,
       );
+      await persistDownloadStatus(downloaded);
 
       await closeProfileBrowser();
       break;

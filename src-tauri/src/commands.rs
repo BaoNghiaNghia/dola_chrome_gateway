@@ -13,10 +13,11 @@ use crate::models::{
 use crate::proxy;
 use crate::state::AppState;
 use crate::worker;
-use chrono::{DateTime, Local, Utc};
+use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tauri::State;
 
 const MAX_SIMULTANEOUS_PROFILES: usize = 4;
@@ -48,25 +49,40 @@ fn ensure_profile_storage_available(state: &AppState) -> Result<(), String> {
     }
 }
 
-fn sync_processes_for_profiles(
-    profiles: &[BrowserProfile],
-    state: &AppState,
-) -> Result<(), String> {
-    let profile_paths = profiles
-        .iter()
-        .map(|profile| {
-            (
-                profile.id.clone(),
-                PathBuf::from(profile.profile_path.as_str()),
-            )
-        })
-        .collect::<Vec<_>>();
+const PROCESS_REFRESH_TTL: Duration = Duration::from_millis(1_500);
 
+fn ingest_profile_download_completions(state: &AppState) -> Result<(), String> {
+    for (profile_id, completion) in
+        adapter_runtime::collect_profile_download_completions(&state.app_data_dir)?
+    {
+        db::record_profile_download(
+            &state.db_path,
+            &profile_id,
+            &completion.local_path,
+            &completion.downloaded_at,
+        )?;
+    }
+    Ok(())
+}
+
+fn sync_processes(state: &AppState, force_proxy_cleanup: bool) -> Result<(), String> {
+    let profile_paths = db::list_profile_paths(&state.db_path)?;
     let discovered = chrome::discover_profile_pids(&profile_paths)?;
     let running_ids = discovered.keys().cloned().collect::<Vec<_>>();
-    db::release_stale_proxy_assignments(&state.db_path, &running_ids)?;
-
     let running_set = running_ids.iter().cloned().collect::<HashSet<_>>();
+
+    let previous_running = state
+        .processes
+        .lock()
+        .map_err(|_| "Process state is unavailable.".to_string())?
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    if force_proxy_cleanup || previous_running != running_set {
+        db::release_stale_proxy_assignments(&state.db_path, &running_ids)?;
+    }
+
     let mut watchers = state
         .profile_download_watchers
         .lock()
@@ -81,6 +97,8 @@ fn sync_processes_for_profiles(
     }
     drop(watchers);
 
+    ingest_profile_download_completions(state)?;
+
     let mut processes = state
         .processes
         .lock()
@@ -90,8 +108,33 @@ fn sync_processes_for_profiles(
 }
 
 fn refresh_processes(state: &AppState) -> Result<(), String> {
-    let profiles = db::list_profiles(&state.db_path)?;
-    sync_processes_for_profiles(&profiles, state)
+    let mut refreshed_at = state
+        .process_refresh_at
+        .lock()
+        .map_err(|_| "Process refresh state is unavailable.".to_string())?;
+    let first_refresh = refreshed_at.is_none();
+    sync_processes(state, first_refresh)?;
+    *refreshed_at = Some(Instant::now());
+    Ok(())
+}
+
+fn refresh_processes_cached(state: &AppState) -> Result<(), String> {
+    let mut refreshed_at = state
+        .process_refresh_at
+        .lock()
+        .map_err(|_| "Process refresh state is unavailable.".to_string())?;
+    if refreshed_at
+        .as_ref()
+        .is_some_and(|instant| instant.elapsed() < PROCESS_REFRESH_TTL)
+    {
+        ingest_profile_download_completions(state)?;
+        return Ok(());
+    }
+
+    let first_refresh = refreshed_at.is_none();
+    sync_processes(state, first_refresh)?;
+    *refreshed_at = Some(Instant::now());
+    Ok(())
 }
 
 fn tile_managed_profile_windows(state: &AppState) -> Result<(), String> {
@@ -121,7 +164,7 @@ fn is_profile_running(profile_id: &str, state: &AppState) -> Result<bool, String
 }
 
 fn decorate_running_state(profiles: &mut [BrowserProfile], state: &AppState) -> Result<(), String> {
-    sync_processes_for_profiles(profiles, state)?;
+    refresh_processes_cached(state)?;
     let processes = state
         .processes
         .lock()
@@ -137,74 +180,7 @@ fn decorate_running_state(profiles: &mut [BrowserProfile], state: &AppState) -> 
             profile.active_proxy = None;
         }
     }
-    drop(processes);
-
-    decorate_download_state(profiles, state);
     Ok(())
-}
-
-fn decorate_download_state(profiles: &mut [BrowserProfile], state: &AppState) {
-    // Downloaded is a daily UI state, not a permanent profile flag.
-    // Reset it on every refresh and only decorate files written during the
-    // current local calendar day. After local midnight, yesterday's download
-    // files remain on disk but no longer produce a Downloaded badge.
-    for profile in profiles.iter_mut() {
-        profile.latest_download_path = None;
-        profile.latest_download_file_name = None;
-        profile.latest_downloaded_at = None;
-    }
-
-    let today = Local::now().date_naive();
-    let downloads_dir = profile_storage_root(state).join("Downloads");
-    let Ok(entries) = std::fs::read_dir(&downloads_dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if file_name.ends_with(".part") {
-            continue;
-        }
-
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        let Ok(modified) = metadata.modified() else {
-            continue;
-        };
-        let modified_local = DateTime::<Local>::from(modified);
-        if modified_local.date_naive() != today {
-            continue;
-        }
-        let downloaded_at = DateTime::<Utc>::from(modified).to_rfc3339();
-
-        for profile in profiles.iter_mut() {
-            let prefix = format!("{}-", profile.id);
-            if !file_name.starts_with(&prefix) {
-                continue;
-            }
-
-            let is_newer = profile
-                .latest_downloaded_at
-                .as_deref()
-                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                .map(|current| DateTime::<Utc>::from(modified) > current.with_timezone(&Utc))
-                .unwrap_or(true);
-
-            if is_newer {
-                profile.latest_download_path = Some(path.to_string_lossy().to_string());
-                profile.latest_download_file_name = Some(file_name.to_string());
-                profile.latest_downloaded_at = Some(downloaded_at.clone());
-            }
-        }
-    }
 }
 
 fn check_and_record_profile_proxy(
@@ -1120,7 +1096,6 @@ pub fn get_automation_runtime_log(
 
 #[tauri::command]
 pub fn get_proxy_pool_state(state: State<'_, AppState>) -> Result<ProxyPoolState, String> {
-    refresh_processes(&state)?;
     Ok(ProxyPoolState {
         enabled: db::get_global_proxy_enabled(&state.db_path)?,
         items: db::list_proxy_pool(&state.db_path)?,

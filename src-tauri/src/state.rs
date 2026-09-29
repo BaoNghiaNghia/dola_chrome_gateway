@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 pub struct BackgroundRuntime {
     pub stop: Arc<AtomicBool>,
@@ -44,6 +45,7 @@ pub struct AppState {
     pub worker_runtime: Mutex<Option<BackgroundRuntime>>,
     pub adapter_runtime: Mutex<Option<AdapterProcessRuntime>>,
     pub profile_download_watchers: Mutex<HashMap<String, ProfileDownloadWatcherRuntime>>,
+    pub process_refresh_at: Mutex<Option<Instant>>,
     pub adapter_config: Mutex<AdapterRuntimeConfig>,
     pub adapter_last_error: Mutex<Option<String>>,
 }
@@ -65,6 +67,7 @@ impl AppState {
             worker_runtime: Mutex::new(None),
             adapter_runtime: Mutex::new(None),
             profile_download_watchers: Mutex::new(HashMap::new()),
+            process_refresh_at: Mutex::new(None),
             adapter_config: Mutex::new(AdapterRuntimeConfig::default()),
             adapter_last_error: Mutex::new(None),
         }
